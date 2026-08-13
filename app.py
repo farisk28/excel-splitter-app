@@ -10,16 +10,13 @@ import zipfile
 # =====================================================================
 def process_excel_with_images(uploaded_files, selected_column):
     """
-    Membaca beberapa file Excel, menggabungkan data teks beserta gambar,
-    lalu mengelompokkan (memisahkan) data berdasarkan kolom terpilih.
+    Membaca beberapa file Excel, membersihkan nilai error seperti #VALUE!,
+    serta mengekstrak data teks dan gambar jika tersedia.
     """
-    all_rows_data = [] # Menampung data teks (dict)
-    all_images_data = [] # Menampung objek gambar dan barisnya
-    
+    all_rows_data = [] 
     headers = []
 
-    for file_idx, file in enumerate(uploaded_files):
-        # Memuat workbook menggunakan openpyxl
+    for file in uploaded_files:
         wb = openpyxl.load_workbook(file, data_only=True)
         ws = wb.active
 
@@ -32,10 +29,7 @@ def process_excel_with_images(uploaded_files, selected_column):
         row_images_map = {}
         if hasattr(ws, '_images'):
             for img in ws._images:
-                # Ambil koordinat baris (1-based index)
                 img_row = img.anchor._from.row + 1
-                
-                # Extract image bytes
                 img_bytes = io.BytesIO(img._data())
                 
                 if img_row not in row_images_map:
@@ -44,10 +38,18 @@ def process_excel_with_images(uploaded_files, selected_column):
 
         # Membaca isi data dari baris ke-2 ke atas
         for row_idx in range(2, ws.max_row + 1):
-            row_vals = [ws.cell(row=row_idx, column=c).value for c in range(1, len(headers) + 1)]
+            row_vals = []
+            for c in range(1, len(headers) + 1):
+                val = ws.cell(row=row_idx, column=c).value
+                
+                # FIX: Membersihkan teks error #VALUE! agar tidak muncul di output
+                if str(val).strip() == "#VALUE!" or val is None:
+                    val = ""
+                
+                row_vals.append(val)
             
-            # Cek apakah baris tidak kosong
-            if any(v is not None for v in row_vals):
+            # Cek apakah baris memiliki isi (tidak kosong seluruhnya)
+            if any(str(v).strip() != "" for v in row_vals):
                 row_dict = {headers[c]: row_vals[c] for c in range(len(headers))}
                 row_images = row_images_map.get(row_idx, [])
                 
@@ -59,7 +61,9 @@ def process_excel_with_images(uploaded_files, selected_column):
     # Mengelompokkan data berdasarkan nilai unik kolom filter
     grouped_data = {}
     for item in all_rows_data:
-        val = str(item['data'].get(selected_column, 'Uncategorized'))
+        val = str(item['data'].get(selected_column, 'Uncategorized')).strip()
+        if not val:
+            val = "Uncategorized"
         if val not in grouped_data:
             grouped_data[val] = []
         grouped_data[val].append(item)
@@ -85,17 +89,17 @@ def create_excel_workbook(headers, items):
             val = row_dict.get(h_text, "")
             ws.cell(row=row_offset, column=col_idx, value=str(val) if val is not None else "")
 
-        # Tempelkan Gambar ke Sel yang Sesuai
-        for col_idx, img_bytes in item['images']:
-            img_bytes.seek(0)
-            new_img = Image(img_bytes)
-            # Atur ukuran gambar agar rapi di sel
-            new_img.width = 100
-            new_img.height = 100
-            
-            col_letter = openpyxl.utils.get_column_letter(col_idx)
-            ws.add_image(new_img, f"{col_letter}{row_offset}")
-            ws.row_dimensions[row_offset].height = 80 # Tinggikan baris sel
+        # Tempelkan Gambar jika ada
+        if item['images']:
+            for col_idx, img_bytes in item['images']:
+                img_bytes.seek(0)
+                new_img = Image(img_bytes)
+                new_img.width = 100
+                new_img.height = 100
+                
+                col_letter = openpyxl.utils.get_column_letter(col_idx)
+                ws.add_image(new_img, f"{col_letter}{row_offset}")
+                ws.row_dimensions[row_offset].height = 80
 
     buffer = io.BytesIO()
     wb.save(buffer)
@@ -106,8 +110,8 @@ def create_excel_workbook(headers, items):
 # INTERFACE STREAMLIT
 # =====================================================================
 st.set_page_config(page_title="Excel Image Splitter App", layout="wide")
-st.title("📊 Excel Splitter & Filter (Dengan Dukungan Gambar)")
-st.write("Unggah file Excel, pilih kolom filter. Gambar di dalam sel akan tetap dipertahankan pada file output!")
+st.title("📊 Excel Splitter & Filter (Dengan Pembersihan Data)")
+st.write("Unggah file Excel, pilih kolom filter. Data akan dipisahkan dan nilai error `#VALUE!` akan dibersihkan secara otomatis!")
 
 uploaded_files = st.file_uploader(
     "Pilih satu atau beberapa file Excel (.xlsx)", 
@@ -116,7 +120,6 @@ uploaded_files = st.file_uploader(
 )
 
 if uploaded_files:
-    # Membaca header dari file pertama untuk pilihan dropdown
     wb_temp = openpyxl.load_workbook(uploaded_files[0], data_only=True)
     first_sheet = wb_temp.active
     available_columns = [str(cell.value) for cell in first_sheet[1] if cell.value is not None]
@@ -129,7 +132,7 @@ if uploaded_files:
     )
 
     if st.button("🚀 Proses & Pisahkan File"):
-        with st.spinner("Memproses data dan memindahkan gambar... Mohon tunggu."):
+        with st.spinner("Memproses data dan membersihkan sel... Mohon tunggu."):
             headers, grouped_data = process_excel_with_images(uploaded_files, selected_column)
             
             st.success(f"Berhasil memisahkan data menjadi **{len(grouped_data)}** kategori!")
@@ -154,7 +157,7 @@ if uploaded_files:
             # --- OPSI 2: MULTI-SHEET ---
             else:
                 wb_multi = openpyxl.Workbook()
-                wb_multi.remove(wb_multi.active) # Hapus sheet default
+                wb_multi.remove(wb_multi.active)
 
                 for val, items in grouped_data.items():
                     clean_sheet_name = str(val)[:30].replace("/", "_").replace("\\", "_").replace("?", "_")
@@ -169,14 +172,15 @@ if uploaded_files:
                             v = row_dict.get(h_text, "")
                             ws.cell(row=row_offset, column=col_idx, value=str(v) if v is not None else "")
 
-                        for col_idx, img_bytes in item['images']:
-                            img_bytes.seek(0)
-                            new_img = Image(img_bytes)
-                            new_img.width = 100
-                            new_img.height = 100
-                            col_letter = openpyxl.utils.get_column_letter(col_idx)
-                            ws.add_image(new_img, f"{col_letter}{row_offset}")
-                            ws.row_dimensions[row_offset].height = 80
+                        if item['images']:
+                            for col_idx, img_bytes in item['images']:
+                                img_bytes.seek(0)
+                                new_img = Image(img_bytes)
+                                new_img.width = 100
+                                new_img.height = 100
+                                col_letter = openpyxl.utils.get_column_letter(col_idx)
+                                ws.add_image(new_img, f"{col_letter}{row_offset}")
+                                ws.row_dimensions[row_offset].height = 80
 
                 multi_buffer = io.BytesIO()
                 wb_multi.save(multi_buffer)
