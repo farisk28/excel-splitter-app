@@ -2,31 +2,6 @@ import streamlit as st
 import pandas as pd
 import io
 import zipfile
-import re
-
-# =====================================================================
-# FUNGSI PEMBERSIH & STANDARISASI FORMAT TRANSACTION AMOUNT
-# =====================================================================
-def format_transaction_amount(val):
-    if pd.isna(val):
-        return val
-    
-    val_str = str(val).strip()
-    
-    # 1. Hapus karakter non-angka (seperti koma atau titik)
-    clean_digits = re.sub(r'[^\d]', '', val_str)
-    
-    if not clean_digits:
-        return val_str
-    
-    num = int(clean_digits)
-    
-    # 2. Koreksi nilai jika terbaca di bawah 1000 (misal: 5 menjadi 5000)
-    if 0 < num < 1000:
-        num = num * 1000
-        
-    # 3. Format ulang menjadi string dengan pemisah ribuan koma (contoh: 5,000)
-    return f"{num:,}"
 
 # =====================================================================
 # 1. KONFIGURASI HALAMAN STREAMLIT
@@ -48,18 +23,15 @@ if uploaded_files:
     df_list = []
     for file in uploaded_files:
         try:
-            # Membaca seluruh data sebagai string
+            # Membaca seluruh data sebagai teks mentah murni (dtype=str)
+            # Tanpa diubah-ubah lagi, sehingga nilai koma/titik tersalin persis apa adanya.
             temp_df = pd.read_excel(file, dtype=str)
-            
-            # Terapkan fungsi pembersihan format angka jika kolom transaction_amount ditemukan
-            if 'transaction_amount' in temp_df.columns:
-                temp_df['transaction_amount'] = temp_df['transaction_amount'].apply(format_transaction_amount)
-                
             df_list.append(temp_df)
         except Exception as e:
             st.error(f"Gagal membaca file {file.name}: {e}")
 
     if df_list:
+        # Menggabungkan seluruh data dari file yang diunggah
         combined_df = pd.concat(df_list, ignore_index=True)
         st.success(f"Berhasil menggabungkan {len(uploaded_files)} file! Total baris data: **{len(combined_df)}**.")
         
@@ -99,6 +71,7 @@ if uploaded_files:
                 with pd.ExcelWriter(output_excel, engine='openpyxl') as writer:
                     for val in unique_values:
                         filtered_df = combined_df[combined_df[selected_column] == val]
+                        # Membersihkan nama sheet dari karakter terlarang di Excel
                         clean_sheet_name = str(val)[:30].replace("/", "_").replace("\\", "_").replace("?", "_")
                         filtered_df.to_excel(writer, sheet_name=clean_sheet_name, index=False)
                 
@@ -115,10 +88,12 @@ if uploaded_files:
                 zip_buffer = io.BytesIO()
                 with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
                     for val in unique_values:
-                        filtered_df = combined_df[combined_df[selected_column] == val]
+                        filtered_df = combined_df[selected_column] == val
+                        filtered_data = combined_df[filtered_df]
+                        
                         excel_buffer = io.BytesIO()
                         with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
-                            filtered_df.to_excel(writer, index=False)
+                            filtered_data.to_excel(writer, index=False)
                         
                         excel_buffer.seek(0)
                         clean_filename = str(val).replace("/", "_").replace("\\", "_")
