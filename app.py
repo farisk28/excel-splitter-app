@@ -23,7 +23,8 @@ if uploaded_files:
     df_list = []
     for file in uploaded_files:
         try:
-            temp_df = pd.read_excel(file)
+            # FIX: Membaca seluruh data sebagai teks (dtype=str) agar format angka/titik/koma tidak berubah
+            temp_df = pd.read_excel(file, dtype=str)
             df_list.append(temp_df)
         except Exception as e:
             st.error(f"Gagal membaca file {file.name}: {e}")
