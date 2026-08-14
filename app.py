@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import openpyxl
 from openpyxl.drawing.image import Image
+from openpyxl.styles import Border, Side, Font, PatternFill, Alignment
 import io
 import zipfile
 
@@ -9,10 +10,6 @@ import zipfile
 # FUNGSI SMART FORMATTER UNTUK TRANSACTION AMOUNT
 # =====================================================================
 def format_transaction_amount(val):
-    """
-    Mengubah nilai angka kecil (seperti 15 atau 15.0) menjadi '15,000',
-    serta mempertahankan teks berformat '15,000'.
-    """
     if val is None:
         return ""
     val_str = str(val).strip()
@@ -21,25 +18,51 @@ def format_transaction_amount(val):
         return ""
     
     try:
-        # Hapus koma/titik pemisah sementara untuk pengecekan numerik
         clean_str = val_str.replace(',', '').replace('.', '')
-        
-        # Jika nilai asli berupa float seperti 15.0, hilangkan desimalnya
         if val_str.endswith('.0'):
             val_str = val_str[:-2]
             clean_str = val_str.replace(',', '').replace('.', '')
 
         num = float(clean_str)
-        
-        # Jika angka di bawah 1000 (misal: 15 atau 80), kalikan 1000 agar menjadi nominal ribuan yang benar
         if 0 < num < 1000:
             num = num * 1000
             
-        # Format kembali menjadi string berformat koma ribuan (contoh: '15,000')
         return f"{int(num):,}"
     except ValueError:
-        # Jika bukan angka (teks biasa), kembalikan teks aslinya
         return val_str
+
+# =====================================================================
+# FUNGSI MENAMBAHKAN BORDER & FORMAT KEPADA SHEET EXCEL
+# =====================================================================
+def apply_excel_styling(ws, headers, num_rows):
+    """
+    Menambahkan border garis tipis pada setiap sel yang terisi data,
+    serta memberi warna latar pada header.
+    """
+    thin_border = Border(
+        left=Side(style='thin', color='D9D9D9'),
+        right=Side(style='thin', color='D9D9D9'),
+        top=Side(style='thin', color='D9D9D9'),
+        bottom=Side(style='thin', color='D9D9D9')
+    )
+    
+    header_fill = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")
+    header_font = Font(name="Calibri", size=11, bold=True)
+    
+    # Apply styling ke Header (Baris 1)
+    for col_idx in range(1, len(headers) + 1):
+        cell = ws.cell(row=1, column=col_idx)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.border = thin_border
+        cell.alignment = Alignment(vertical="center")
+
+    # Apply border ke seluruh Baris Data
+    for row_idx in range(2, num_rows + 2):
+        for col_idx in range(1, len(headers) + 1):
+            cell = ws.cell(row=row_idx, column=col_idx)
+            cell.border = thin_border
+            cell.alignment = Alignment(vertical="center")
 
 # =====================================================================
 # FUNGSI MEMBACA DATA TEKS DAN GAMBAR MENGGUNAKAN OPENPYXL
@@ -52,12 +75,10 @@ def process_excel_files(uploaded_files):
         wb = openpyxl.load_workbook(file, data_only=True)
         ws = wb.active
 
-        # Ambil nama-nama kolom dari Baris 1
         current_headers = [str(cell.value).strip() for cell in ws[1] if cell.value is not None]
         if not headers:
             headers = current_headers
 
-        # Peta objek gambar: {row_index: list_of_images}
         row_images_map = {}
         if hasattr(ws, '_images'):
             for img in ws._images:
@@ -68,7 +89,6 @@ def process_excel_files(uploaded_files):
                     row_images_map[img_row] = []
                 row_images_map[img_row].append((img.anchor._from.col + 1, img_bytes))
 
-        # Membaca baris data (mulai dari Baris 2)
         for row_idx in range(2, ws.max_row + 1):
             row_vals = []
             row_dict = {}
@@ -76,7 +96,6 @@ def process_excel_files(uploaded_files):
                 col_name = headers[c - 1]
                 raw_val = ws.cell(row=row_idx, column=c).value
                 
-                # Format khusus untuk kolom transaction_amount
                 if col_name == 'transaction_amount':
                     val = format_transaction_amount(raw_val)
                 else:
@@ -85,7 +104,6 @@ def process_excel_files(uploaded_files):
                 row_vals.append(val)
                 row_dict[col_name] = val
             
-            # Masukkan baris jika tidak kosong
             if any(v != "" for v in row_vals):
                 row_images = row_images_map.get(row_idx, [])
                 all_rows_data.append({
@@ -96,18 +114,19 @@ def process_excel_files(uploaded_files):
     return headers, all_rows_data
 
 # =====================================================================
-# FUNGSI MEMBUAT WORKBOOK BARU
+# FUNGSI MEMBUAT WORKBOOK BARU DENGAN BORDER
 # =====================================================================
 def create_excel_workbook(headers, items):
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Report"
+    ws.views.sheetView[0].showGridLines = True
 
-    # Tulis Header
+    # 1. Tulis Header
     for col_idx, h_text in enumerate(headers, start=1):
         ws.cell(row=1, column=col_idx, value=h_text)
 
-    # Tulis Baris Data & Tempelkan Gambar
+    # 2. Tulis Baris Data & Tempelkan Gambar
     for row_offset, item in enumerate(items, start=2):
         row_dict = item['data']
         for col_idx, h_text in enumerate(headers, start=1):
@@ -124,6 +143,9 @@ def create_excel_workbook(headers, items):
                 col_letter = openpyxl.utils.get_column_letter(col_idx)
                 ws.add_image(new_img, f"{col_letter}{row_offset}")
                 ws.row_dimensions[row_offset].height = 80
+
+    # 3. Terapkan Border dan Styling
+    apply_excel_styling(ws, headers, len(items))
 
     buffer = io.BytesIO()
     wb.save(buffer)
@@ -151,13 +173,11 @@ if uploaded_files:
         
         st.success(f"Berhasil membaca dan menggabungkan **{len(uploaded_files)}** file! Total data: **{len(preview_df)}** baris.")
         
-        # PRATINJAU DATA GABUNGAN
         with st.expander("👀 Lihat Pratinjau Data Gabungan (Seluruh File)", expanded=True):
             st.dataframe(preview_df.head(15))
 
         st.markdown("---")
 
-        # PILIHAN KOLOM FILTER
         st.subheader("⚙️ Atur Filter Pemisahan Data")
         selected_column = st.selectbox(
             "Pilih kolom yang ingin dijadikan dasar pemisahan:",
@@ -178,7 +198,6 @@ if uploaded_files:
 
             st.markdown("---")
 
-            # OPSI UNDUHAN
             st.subheader("📥 Unduh Hasil Filter")
             download_format = st.radio(
                 "Pilih format hasil unduhan:",
@@ -210,10 +229,13 @@ if uploaded_files:
                 for val, items in grouped_data.items():
                     clean_sheet_name = str(val)[:30].replace("/", "_").replace("\\", "_").replace("?", "_")
                     ws = wb_multi.create_sheet(title=clean_sheet_name)
+                    ws.views.sheetView[0].showGridLines = True
 
+                    # 1. Tulis Header
                     for col_idx, h_text in enumerate(headers, start=1):
                         ws.cell(row=1, column=col_idx, value=h_text)
 
+                    # 2. Tulis Data & Gambar
                     for row_offset, item in enumerate(items, start=2):
                         row_dict = item['data']
                         for col_idx, h_text in enumerate(headers, start=1):
@@ -229,6 +251,9 @@ if uploaded_files:
                                 col_letter = openpyxl.utils.get_column_letter(col_idx)
                                 ws.add_image(new_img, f"{col_letter}{row_offset}")
                                 ws.row_dimensions[row_offset].height = 80
+
+                    # 3. Apply Styling Border
+                    apply_excel_styling(ws, headers, len(items))
 
                 multi_buffer = io.BytesIO()
                 wb_multi.save(multi_buffer)
