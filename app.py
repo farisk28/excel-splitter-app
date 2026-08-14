@@ -6,12 +6,30 @@ import io
 import zipfile
 
 # =====================================================================
+# FUNGSI PEMBERSIH TEKS SEL (MENGHILANGKAN .0 DENGAN RAPI)
+# =====================================================================
+def clean_cell_value(val):
+    if val is None:
+        return ""
+    val_str = str(val).strip()
+    
+    # Membersihkan teks error #VALUE!
+    if val_str == "#VALUE!":
+        return ""
+    
+    # Menghilangkan akhiran .0 dari pembacaan float (misal: 15.0 menjadi 15)
+    if val_str.endswith(".0"):
+        val_str = val_str[:-2]
+        
+    return val_str
+
+# =====================================================================
 # FUNGSI MEMBACA DATA TEKS DAN GAMBAR MENGGUNAKAN OPENPYXL
 # =====================================================================
-def process_excel_with_images(uploaded_files, selected_column):
+def process_excel_files(uploaded_files):
     """
-    Membaca beberapa file Excel, membersihkan nilai error seperti #VALUE!,
-    serta mengekstrak data teks dan gambar jika tersedia.
+    Membaca seluruh file Excel yang diunggah, menggabungkan data teks
+    beserta objek gambar jika ada.
     """
     all_rows_data = [] 
     headers = []
@@ -21,7 +39,7 @@ def process_excel_with_images(uploaded_files, selected_column):
         ws = wb.active
 
         # Read headers from row 1
-        current_headers = [str(cell.value) if cell.value is not None else '' for cell in ws[1]]
+        current_headers = [clean_cell_value(cell.value) for cell in ws[1] if cell.value is not None]
         if not headers:
             headers = current_headers
 
@@ -40,16 +58,11 @@ def process_excel_with_images(uploaded_files, selected_column):
         for row_idx in range(2, ws.max_row + 1):
             row_vals = []
             for c in range(1, len(headers) + 1):
-                val = ws.cell(row=row_idx, column=c).value
-                
-                # FIX: Membersihkan teks error #VALUE! agar tidak muncul di output
-                if str(val).strip() == "#VALUE!" or val is None:
-                    val = ""
-                
+                val = clean_cell_value(ws.cell(row=row_idx, column=c).value)
                 row_vals.append(val)
             
             # Cek apakah baris memiliki isi (tidak kosong seluruhnya)
-            if any(str(v).strip() != "" for v in row_vals):
+            if any(v != "" for v in row_vals):
                 row_dict = {headers[c]: row_vals[c] for c in range(len(headers))}
                 row_images = row_images_map.get(row_idx, [])
                 
@@ -58,20 +71,10 @@ def process_excel_with_images(uploaded_files, selected_column):
                     'images': row_images
                 })
 
-    # Mengelompokkan data berdasarkan nilai unik kolom filter
-    grouped_data = {}
-    for item in all_rows_data:
-        val = str(item['data'].get(selected_column, 'Uncategorized')).strip()
-        if not val:
-            val = "Uncategorized"
-        if val not in grouped_data:
-            grouped_data[val] = []
-        grouped_data[val].append(item)
-
-    return headers, grouped_data
+    return headers, all_rows_data
 
 # =====================================================================
-# FUNGSI MEMBUAT WORKBOOK BARU LENGKAP DENGAN GAMBAR
+# FUNGSI MEMBUAT WORKBOOK BARU
 # =====================================================================
 def create_excel_workbook(headers, items):
     wb = openpyxl.Workbook()
@@ -87,7 +90,7 @@ def create_excel_workbook(headers, items):
         row_dict = item['data']
         for col_idx, h_text in enumerate(headers, start=1):
             val = row_dict.get(h_text, "")
-            ws.cell(row=row_offset, column=col_idx, value=str(val) if val is not None else "")
+            ws.cell(row=row_offset, column=col_idx, value=val)
 
         # Tempelkan Gambar jika ada
         if item['images']:
@@ -109,9 +112,9 @@ def create_excel_workbook(headers, items):
 # =====================================================================
 # INTERFACE STREAMLIT
 # =====================================================================
-st.set_page_config(page_title="Excel Image Splitter App", layout="wide")
-st.title("📊 Excel Splitter & Filter (Dengan Pembersihan Data)")
-st.write("Unggah file Excel, pilih kolom filter. Data akan dipisahkan dan nilai error `#VALUE!` akan dibersihkan secara otomatis!")
+st.set_page_config(page_title="Excel Splitter & Filter App", layout="wide")
+st.title("📊 Aplikasi Penggabung & Pemisah Berkas Excel")
+st.write("Unggah beberapa file Excel, lihat pratinjau data gabungan, pilih kolom filter, dan unduh hasilnya dalam format Excel Multi-Sheet atau File ZIP.")
 
 uploaded_files = st.file_uploader(
     "Pilih satu atau beberapa file Excel (.xlsx)", 
@@ -120,24 +123,51 @@ uploaded_files = st.file_uploader(
 )
 
 if uploaded_files:
-    wb_temp = openpyxl.load_workbook(uploaded_files[0], data_only=True)
-    first_sheet = wb_temp.active
-    available_columns = [str(cell.value) for cell in first_sheet[1] if cell.value is not None]
+    # Membaca seluruh data file untuk pratinjau dan pemrosesan
+    headers, all_rows_data = process_excel_files(uploaded_files)
+    
+    if all_rows_data:
+        # Konversi ke DataFrame Pandas khusus untuk Pratinjau di Web
+        preview_df = pd.DataFrame([item['data'] for item in all_rows_data])
+        
+        st.success(f"Berhasil membaca dan menggabungkan **{len(uploaded_files)}** file! Total data: **{len(preview_df)}** baris.")
+        
+        # 1. FITUR PRATINJAU DATA GABUNGAN
+        with st.expander("👀 Lihat Pratinjau Data Gabungan (Seluruh File)", expanded=True):
+            st.dataframe(preview_df.head(15))
 
-    selected_column = st.selectbox("Pilih kolom yang ingin dijadikan dasar pemisahan:", options=available_columns)
+        st.markdown("---")
 
-    download_format = st.radio(
-        "Pilih format hasil unduhan:",
-        options=["1 File ZIP (Banyak File Excel Terpisah)", "1 File Excel (Multi-Sheet)"]
-    )
+        # 2. PILIHAN KOLOM FILTER
+        st.subheader("⚙️ Atur Filter Pemisahan Data")
+        selected_column = st.selectbox(
+            "Pilih kolom yang ingin dijadikan dasar pemisahan:",
+            options=headers
+        )
 
-    if st.button("🚀 Proses & Pisahkan File"):
-        with st.spinner("Memproses data dan membersihkan sel... Mohon tunggu."):
-            headers, grouped_data = process_excel_with_images(uploaded_files, selected_column)
-            
-            st.success(f"Berhasil memisahkan data menjadi **{len(grouped_data)}** kategori!")
+        if selected_column:
+            # Mengelompokkan data berdasarkan kolom terpilih
+            grouped_data = {}
+            for item in all_rows_data:
+                val = item['data'].get(selected_column, "Uncategorized").strip()
+                if not val:
+                    val = "Uncategorized"
+                if val not in grouped_data:
+                    grouped_data[val] = []
+                grouped_data[val].append(item)
 
-            # --- OPSI 1: FILE ZIP ---
+            st.info(f"Ditemukan **{len(grouped_data)}** kategori unik pada kolom **'{selected_column}'**.")
+
+            st.markdown("---")
+
+            # 3. OPSI UNDUHAN
+            st.subheader("📥 Unduh Hasil Filter")
+            download_format = st.radio(
+                "Pilih format hasil unduhan:",
+                options=["1 File ZIP (Banyak File Excel Terpisah)", "1 File Excel (Multi-Sheet)"]
+            )
+
+            # --- OPSI A: FILE ZIP ---
             if download_format == "1 File ZIP (Banyak File Excel Terpisah)":
                 zip_buffer = io.BytesIO()
                 with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
@@ -148,13 +178,13 @@ if uploaded_files:
 
                 zip_buffer.seek(0)
                 st.download_button(
-                    label="📥 Download File ZIP",
+                    label="📥 Download File ZIP (Kumpulan File Excel)",
                     data=zip_buffer,
                     file_name=f"Hasil_Filter_{selected_column}.zip",
                     mime="application/zip"
                 )
 
-            # --- OPSI 2: MULTI-SHEET ---
+            # --- OPSI B: MULTI-SHEET ---
             else:
                 wb_multi = openpyxl.Workbook()
                 wb_multi.remove(wb_multi.active)
@@ -170,7 +200,7 @@ if uploaded_files:
                         row_dict = item['data']
                         for col_idx, h_text in enumerate(headers, start=1):
                             v = row_dict.get(h_text, "")
-                            ws.cell(row=row_offset, column=col_idx, value=str(v) if v is not None else "")
+                            ws.cell(row=row_offset, column=col_idx, value=v)
 
                         if item['images']:
                             for col_idx, img_bytes in item['images']:
