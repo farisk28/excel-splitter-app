@@ -6,31 +6,45 @@ import io
 import zipfile
 
 # =====================================================================
-# FUNGSI PEMBERSIH TEKS SEL (MENGHILANGKAN .0 DENGAN RAPI)
+# FUNGSI SMART FORMATTER UNTUK TRANSACTION AMOUNT
 # =====================================================================
-def clean_cell_value(val):
+def format_transaction_amount(val):
+    """
+    Mengubah nilai angka kecil (seperti 15 atau 15.0) menjadi '15,000',
+    serta mempertahankan teks berformat '15,000'.
+    """
     if val is None:
         return ""
     val_str = str(val).strip()
     
-    # Membersihkan teks error #VALUE!
-    if val_str == "#VALUE!":
+    if val_str == "#VALUE!" or not val_str:
         return ""
     
-    # Menghilangkan akhiran .0 dari pembacaan float (misal: 15.0 menjadi 15)
-    if val_str.endswith(".0"):
-        val_str = val_str[:-2]
+    try:
+        # Hapus koma/titik pemisah sementara untuk pengecekan numerik
+        clean_str = val_str.replace(',', '').replace('.', '')
         
-    return val_str
+        # Jika nilai asli berupa float seperti 15.0, hilangkan desimalnya
+        if val_str.endswith('.0'):
+            val_str = val_str[:-2]
+            clean_str = val_str.replace(',', '').replace('.', '')
+
+        num = float(clean_str)
+        
+        # Jika angka di bawah 1000 (misal: 15 atau 80), kalikan 1000 agar menjadi nominal ribuan yang benar
+        if 0 < num < 1000:
+            num = num * 1000
+            
+        # Format kembali menjadi string berformat koma ribuan (contoh: '15,000')
+        return f"{int(num):,}"
+    except ValueError:
+        # Jika bukan angka (teks biasa), kembalikan teks aslinya
+        return val_str
 
 # =====================================================================
 # FUNGSI MEMBACA DATA TEKS DAN GAMBAR MENGGUNAKAN OPENPYXL
 # =====================================================================
 def process_excel_files(uploaded_files):
-    """
-    Membaca seluruh file Excel yang diunggah, menggabungkan data teks
-    beserta objek gambar jika ada.
-    """
     all_rows_data = [] 
     headers = []
 
@@ -38,12 +52,12 @@ def process_excel_files(uploaded_files):
         wb = openpyxl.load_workbook(file, data_only=True)
         ws = wb.active
 
-        # Read headers from row 1
-        current_headers = [clean_cell_value(cell.value) for cell in ws[1] if cell.value is not None]
+        # Ambil nama-nama kolom dari Baris 1
+        current_headers = [str(cell.value).strip() for cell in ws[1] if cell.value is not None]
         if not headers:
             headers = current_headers
 
-        # Peta gambar untuk sheet ini: {row_index: list_of_images}
+        # Peta objek gambar: {row_index: list_of_images}
         row_images_map = {}
         if hasattr(ws, '_images'):
             for img in ws._images:
@@ -54,18 +68,26 @@ def process_excel_files(uploaded_files):
                     row_images_map[img_row] = []
                 row_images_map[img_row].append((img.anchor._from.col + 1, img_bytes))
 
-        # Membaca isi data dari baris ke-2 ke atas
+        # Membaca baris data (mulai dari Baris 2)
         for row_idx in range(2, ws.max_row + 1):
             row_vals = []
+            row_dict = {}
             for c in range(1, len(headers) + 1):
-                val = clean_cell_value(ws.cell(row=row_idx, column=c).value)
-                row_vals.append(val)
-            
-            # Cek apakah baris memiliki isi (tidak kosong seluruhnya)
-            if any(v != "" for v in row_vals):
-                row_dict = {headers[c]: row_vals[c] for c in range(len(headers))}
-                row_images = row_images_map.get(row_idx, [])
+                col_name = headers[c - 1]
+                raw_val = ws.cell(row=row_idx, column=c).value
                 
+                # Format khusus untuk kolom transaction_amount
+                if col_name == 'transaction_amount':
+                    val = format_transaction_amount(raw_val)
+                else:
+                    val = "" if raw_val is None or str(raw_val).strip() == "#VALUE!" else str(raw_val).strip()
+                
+                row_vals.append(val)
+                row_dict[col_name] = val
+            
+            # Masukkan baris jika tidak kosong
+            if any(v != "" for v in row_vals):
+                row_images = row_images_map.get(row_idx, [])
                 all_rows_data.append({
                     'data': row_dict,
                     'images': row_images
@@ -92,7 +114,6 @@ def create_excel_workbook(headers, items):
             val = row_dict.get(h_text, "")
             ws.cell(row=row_offset, column=col_idx, value=val)
 
-        # Tempelkan Gambar jika ada
         if item['images']:
             for col_idx, img_bytes in item['images']:
                 img_bytes.seek(0)
@@ -123,22 +144,20 @@ uploaded_files = st.file_uploader(
 )
 
 if uploaded_files:
-    # Membaca seluruh data file untuk pratinjau dan pemrosesan
     headers, all_rows_data = process_excel_files(uploaded_files)
     
     if all_rows_data:
-        # Konversi ke DataFrame Pandas khusus untuk Pratinjau di Web
         preview_df = pd.DataFrame([item['data'] for item in all_rows_data])
         
         st.success(f"Berhasil membaca dan menggabungkan **{len(uploaded_files)}** file! Total data: **{len(preview_df)}** baris.")
         
-        # 1. FITUR PRATINJAU DATA GABUNGAN
+        # PRATINJAU DATA GABUNGAN
         with st.expander("👀 Lihat Pratinjau Data Gabungan (Seluruh File)", expanded=True):
             st.dataframe(preview_df.head(15))
 
         st.markdown("---")
 
-        # 2. PILIHAN KOLOM FILTER
+        # PILIHAN KOLOM FILTER
         st.subheader("⚙️ Atur Filter Pemisahan Data")
         selected_column = st.selectbox(
             "Pilih kolom yang ingin dijadikan dasar pemisahan:",
@@ -146,7 +165,6 @@ if uploaded_files:
         )
 
         if selected_column:
-            # Mengelompokkan data berdasarkan kolom terpilih
             grouped_data = {}
             for item in all_rows_data:
                 val = item['data'].get(selected_column, "Uncategorized").strip()
@@ -160,7 +178,7 @@ if uploaded_files:
 
             st.markdown("---")
 
-            # 3. OPSI UNDUHAN
+            # OPSI UNDUHAN
             st.subheader("📥 Unduh Hasil Filter")
             download_format = st.radio(
                 "Pilih format hasil unduhan:",
