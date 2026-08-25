@@ -3,6 +3,7 @@ import pandas as pd
 import openpyxl
 from openpyxl.drawing.image import Image
 from openpyxl.styles import Border, Side, Font, PatternFill, Alignment
+from openpyxl.utils import get_column_letter
 import io
 import zipfile
 import xml.etree.ElementTree as ET
@@ -12,10 +13,6 @@ import msoffcrypto
 # 1. FUNGSI DEKRIPSI FILE EXCEL TERPROTEKSI PASSWORD
 # =====================================================================
 def decrypt_excel_file(file_bytes, password=None):
-    """
-    Mendekripsi file Excel jika diproteksi kata sandi.
-    Jika tidak terproteksi, mengembalikan byte data asli.
-    """
     file_io = io.BytesIO(file_bytes)
     try:
         office_file = msoffcrypto.OfficeFile(file_io)
@@ -55,7 +52,7 @@ def format_transaction_amount(val):
         return val_str
 
 # =====================================================================
-# 3. FUNGSI STYLING TABEL & BORDER EXCEL
+# 3. FUNGSI STYLING TABEL, WRAP TEXT, & BORDER EXCEL
 # =====================================================================
 def apply_excel_styling(ws, headers, num_rows):
     thin_border = Border(
@@ -67,20 +64,36 @@ def apply_excel_styling(ws, headers, num_rows):
     header_fill = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")
     header_font = Font(name="Calibri", size=11, bold=True)
     
-    # Format Header
+    # 1. Format Header (Diberi Wrap Text dan Alignment Center)
     for col_idx in range(1, len(headers) + 1):
         cell = ws.cell(row=1, column=col_idx)
         cell.font = header_font
         cell.fill = header_fill
         cell.border = thin_border
-        cell.alignment = Alignment(vertical="center", horizontal="center")
+        cell.alignment = Alignment(vertical="center", horizontal="center", wrap_text=True)
 
-    # Format Data
+    # 2. Format Sel Data (Diberi Wrap Text agar Teks Panjang Rapi)
     for row_idx in range(2, num_rows + 2):
         for col_idx in range(1, len(headers) + 1):
             cell = ws.cell(row=row_idx, column=col_idx)
             cell.border = thin_border
-            cell.alignment = Alignment(vertical="center")
+            # FITUR BARU: wrap_text=True pada seluruh sel isi data
+            cell.alignment = Alignment(vertical="center", wrap_text=True)
+
+    # 3. Mengatur Lebar Kolom yang Ideal
+    for col_idx, h_name in enumerate(headers, start=1):
+        col_letter = get_column_letter(col_idx)
+        h_lower = str(h_name).lower()
+        
+        # Atur lebar kolom khusus untuk URL, QRIS, dan Evidence
+        if 'evidence' in h_lower or 'image' in h_lower or 'gambar' in h_lower:
+            ws.column_dimensions[col_letter].width = 40  # Lebar untuk menampung gambar besar
+        elif 'url' in h_lower or 'qris' in h_lower or 'location' in h_lower:
+            ws.column_dimensions[col_letter].width = 30  # Lebar untuk teks panjang
+        elif 'name' in h_lower or 'identifier' in h_lower or 'transaction' in h_lower:
+            ws.column_dimensions[col_letter].width = 25
+        else:
+            ws.column_dimensions[col_letter].width = 18
 
 # =====================================================================
 # 4. FUNGSI EKSTRAKSI GAMBAR (IN-CELL & FLOATING)
@@ -88,7 +101,7 @@ def apply_excel_styling(ws, headers, num_rows):
 def extract_sheet_images(file_bytes, sheet_name):
     row_images_map = {}
     
-    # Ekstraksi In-Cell Image (RichData)
+    # Ekstraksi In-Cell Image (Excel 365 RichData)
     try:
         with zipfile.ZipFile(io.BytesIO(file_bytes), 'r') as z:
             namelist = z.namelist()
@@ -147,7 +160,7 @@ def extract_sheet_images(file_bytes, sheet_name):
     return row_images_map
 
 # =====================================================================
-# 5. FUNGSI MEMBACA MULTI-SHEET EXCEL (DENGAN DUKUNGAN PASSWORD)
+# 5. FUNGSI MEMBACA MULTI-SHEET EXCEL
 # =====================================================================
 def process_multisheet_excel(uploaded_files, password=""):
     sheets_dict = {}
@@ -156,7 +169,6 @@ def process_multisheet_excel(uploaded_files, password=""):
     for file in uploaded_files:
         raw_bytes = file.getvalue()
         
-        # Jalankan fungsi dekripsi
         decrypted_bytes, err = decrypt_excel_file(raw_bytes, password)
         if err:
             errors.append(f"File **{file.name}**: {err}")
@@ -209,7 +221,7 @@ def process_multisheet_excel(uploaded_files, password=""):
     return sheets_dict, errors
 
 # =====================================================================
-# 6. FUNGSI MEMBUAT WORKBOOK OUTPUT
+# 6. FUNGSI MEMBUAT WORKBOOK OUTPUT DENGAN GAMBAR BESAR & WRAP TEXT
 # =====================================================================
 def create_multisheet_workbook(sheets_dict, target_val, selected_column):
     wb = openpyxl.Workbook()
@@ -228,27 +240,37 @@ def create_multisheet_workbook(sheets_dict, target_val, selected_column):
         ws = wb.create_sheet(title=clean_sheet_name)
         ws.views.sheetView[0].showGridLines = True
 
-        # Header
+        # 1. Tulis Header
         for col_idx, h_text in enumerate(headers, start=1):
             ws.cell(row=1, column=col_idx, value=h_text)
 
-        # Data & Gambar
+        # 2. Tulis Data & Sisipkan Gambar Berukuran Lebih Besar
         for row_offset, item in enumerate(filtered_rows, start=2):
             row_dict = item['data']
             for col_idx, h_text in enumerate(headers, start=1):
                 val = row_dict.get(h_text, "")
                 ws.cell(row=row_offset, column=col_idx, value=val)
 
+            # Jika ada gambar pada baris ini
             if item['images']:
                 for col_idx, img_bytes in item['images']:
                     img_bytes.seek(0)
                     new_img = Image(img_bytes)
-                    new_img.width = 100
-                    new_img.height = 100
-                    col_letter = openpyxl.utils.get_column_letter(col_idx)
+                    
+                    # FITUR BARU: Memperbesar gambar agar jelas dibaca (lebar 270px, tinggi 150px)
+                    new_img.width = 270
+                    new_img.height = 150
+                    
+                    col_letter = get_column_letter(col_idx)
                     ws.add_image(new_img, f"{col_letter}{row_offset}")
-                    ws.row_dimensions[row_offset].height = 80
+                
+                # FITUR BARU: Tinggikan baris menjadi 125 pt agar pas dengan gambar besar
+                ws.row_dimensions[row_offset].height = 125
+            else:
+                # Jika tidak ada gambar, beri tinggi baris yang nyaman untuk wrap text
+                ws.row_dimensions[row_offset].height = 25
 
+        # 3. Terapkan Wrap Text, Border, dan Lebar Kolom
         apply_excel_styling(ws, headers, len(filtered_rows))
 
     buffer = io.BytesIO()
@@ -261,7 +283,7 @@ def create_multisheet_workbook(sheets_dict, target_val, selected_column):
 # =====================================================================
 st.set_page_config(page_title="Multi-Sheet Excel Splitter", layout="wide")
 st.title("📊 Aplikasi Pemisah & Penggabung Berkas Excel")
-st.write("Unggah file Excel (termasuk file yang diproteksi password), pilih kolom filter, dan unduh hasilnya secara otomatis!")
+st.write("Unggah file Excel, lihat pratinjau data, pilih kolom filter, dan unduh hasilnya secara rapi dengan format *Wrap Text* dan gambar yang lebih jelas!")
 
 col1, col2 = st.columns([2, 1])
 with col1:
@@ -271,7 +293,6 @@ with col1:
         accept_multiple_files=True
     )
 with col2:
-    # FITUR BARU: Input Password
     file_password = st.text_input(
         "🔑 Password File (jika file terenkripsi):", 
         type="password",
@@ -282,7 +303,6 @@ if uploaded_files:
     with st.spinner("Membaca dan memproses file Excel..."):
         sheets_dict, errors = process_multisheet_excel(uploaded_files, password=file_password)
     
-    # Tampilkan pesan error jika password salah atau belum diisi
     if errors:
         for err in errors:
             st.error(err)
@@ -300,7 +320,7 @@ if uploaded_files:
 
         st.markdown("---")
 
-        # Kolom Filter
+        # Kolom Filter Bersama
         all_header_sets = [set(info['headers']) for info in sheets_dict.values()]
         common_columns = list(set.intersection(*all_header_sets)) if all_header_sets else []
         if not common_columns:
@@ -326,9 +346,10 @@ if uploaded_files:
 
             st.markdown("---")
 
+            # Tombol Eksekusi Unduhan
             st.subheader("📥 Unduh Hasil Filter")
             if st.button("🚀 Proses & Buat File ZIP Multi-Sheet"):
-                with st.spinner("Menyusun file Excel..."):
+                with st.spinner("Menyusun file Excel dan menyesuaikan format tabel..."):
                     zip_buffer = io.BytesIO()
                     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
                         for val in unique_list:
