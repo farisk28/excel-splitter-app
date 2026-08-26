@@ -10,7 +10,7 @@ import xml.etree.ElementTree as ET
 import msoffcrypto
 
 # =====================================================================
-# 1. FUNGSI DEKRIPSI & ENKRIPSI EXCEL
+# 1. FUNGSI DEKRIPSI FILE EXCEL INPUT
 # =====================================================================
 def decrypt_excel_file(file_bytes, password=None):
     """Mendekripsi file Excel input jika terkunci password."""
@@ -30,20 +30,6 @@ def decrypt_excel_file(file_bytes, password=None):
             return file_bytes, None
     except Exception as e:
         return None, f"Password salah atau gagal membuka file terenkripsi ({str(e)})."
-
-def encrypt_excel_bytes(raw_bytes, password=None):
-    """Mengenkripsi file Excel output menggunakan password sebelum dimasukkan ke ZIP."""
-    if not password:
-        return raw_bytes
-    
-    input_io = io.BytesIO(raw_bytes)
-    output_io = io.BytesIO()
-    
-    # Enkripsi menggunakan msoffcrypto standar Office
-    office_file = msoffcrypto.OfficeFile()
-    office_file.encrypt(input_io, output_io, password=password)
-    output_io.seek(0)
-    return output_io.getvalue()
 
 # =====================================================================
 # 2. FUNGSI FORMAT NOMINAL & PEMBERSIH TEKS
@@ -227,9 +213,9 @@ def process_multisheet_excel(uploaded_files, password=""):
     return sheets_dict, errors
 
 # =====================================================================
-# 6. FUNGSI MEMBUAT WORKBOOK OUTPUT DENGAN ENKRIPSI PASSWORD
+# 6. FUNGSI MEMBUAT WORKBOOK OUTPUT
 # =====================================================================
-def create_multisheet_workbook(sheets_dict, target_val, selected_column, out_password=None):
+def create_multisheet_workbook(sheets_dict, target_val, selected_column):
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
 
@@ -246,11 +232,9 @@ def create_multisheet_workbook(sheets_dict, target_val, selected_column, out_pas
         ws = wb.create_sheet(title=clean_sheet_name)
         ws.views.sheetView[0].showGridLines = True
 
-        # Header
         for col_idx, h_text in enumerate(headers, start=1):
             ws.cell(row=1, column=col_idx, value=h_text)
 
-        # Data & Gambar
         for row_offset, item in enumerate(filtered_rows, start=2):
             row_dict = item['data']
             for col_idx, h_text in enumerate(headers, start=1):
@@ -273,18 +257,14 @@ def create_multisheet_workbook(sheets_dict, target_val, selected_column, out_pas
 
     temp_buffer = io.BytesIO()
     wb.save(temp_buffer)
-    raw_excel_bytes = temp_buffer.getvalue()
-
-    # Enkripsi file jika kata sandi output diisi
-    encrypted_excel_bytes = encrypt_excel_bytes(raw_excel_bytes, password=out_password)
-    return encrypted_excel_bytes
+    return temp_buffer.getvalue()
 
 # =====================================================================
 # 7. INTERFACE STREAMLIT
 # =====================================================================
 st.set_page_config(page_title="Multi-Sheet Excel Splitter", layout="wide")
 st.title("📊 Aplikasi Pemisah & Penggabung Berkas Excel")
-st.write("Unggah file Excel, lihat pratinjau data, tentukan password proteksi output, dan unduh hasilnya secara otomatis!")
+st.write("Unggah file Excel, lihat pratinjau data, pilih kolom filter, dan unduh hasilnya secara otomatis!")
 
 col1, col2 = st.columns([2, 1])
 with col1:
@@ -295,7 +275,7 @@ with col1:
     )
 with col2:
     input_password = st.text_input(
-        "🔓 Password Buka File Input (jika file input terkunci):", 
+        "🔓 Password Buka File Input (jika file terkunci):", 
         type="password",
         help="Masukkan password jika file Excel yang diunggah diproteksi kata sandi."
     )
@@ -327,21 +307,11 @@ if uploaded_files:
         if not common_columns:
             common_columns = list(set.union(*all_header_sets))
 
-        st.subheader("⚙️ Atur Filter & Proteksi Output")
-        
-        col_filter, col_out_pass = st.columns([1, 1])
-        with col_filter:
-            selected_column = st.selectbox(
-                "Pilih kolom dasar pemisahan:",
-                options=common_columns
-            )
-        with col_out_pass:
-            # FITUR BARU: Password untuk File Output
-            output_password = st.text_input(
-                "🔒 Kunci File Excel Output dengan Password (opsional):",
-                type="password",
-                help="Jika diisi, semua file Excel di dalam ZIP akan otomatis terkunci dengan password ini."
-            )
+        st.subheader("⚙️ Atur Filter Pemisahan Data")
+        selected_column = st.selectbox(
+            "Pilih kolom dasar pemisahan:",
+            options=common_columns
+        )
 
         if selected_column:
             all_unique_values = set()
@@ -360,15 +330,14 @@ if uploaded_files:
             # Tombol Eksekusi Unduhan
             st.subheader("📥 Unduh Hasil Filter")
             if st.button("🚀 Proses & Buat File ZIP Multi-Sheet"):
-                with st.spinner("Menyusun file Excel dan mengaplikasikan proteksi password..."):
+                with st.spinner("Menyusun file Excel ke dalam arsip ZIP..."):
                     zip_buffer = io.BytesIO()
                     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
                         for val in unique_list:
                             excel_bytes = create_multisheet_workbook(
                                 sheets_dict, 
                                 val, 
-                                selected_column, 
-                                out_password=output_password if output_password else None
+                                selected_column
                             )
                             clean_filename = str(val).replace("/", "_").replace("\\", "_").replace("?", "_")
                             zip_file.writestr(f"{clean_filename}.xlsx", excel_bytes)
