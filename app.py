@@ -10,15 +10,16 @@ import xml.etree.ElementTree as ET
 import msoffcrypto
 
 # =====================================================================
-# 1. FUNGSI DEKRIPSI FILE EXCEL TERPROTEKSI PASSWORD
+# 1. FUNGSI DEKRIPSI & ENKRIPSI EXCEL
 # =====================================================================
 def decrypt_excel_file(file_bytes, password=None):
+    """Mendekripsi file Excel input jika terkunci password."""
     file_io = io.BytesIO(file_bytes)
     try:
         office_file = msoffcrypto.OfficeFile(file_io)
         if office_file.is_encrypted():
             if not password:
-                return None, "File terkunci kata sandi. Harap masukkan password pada kolom di atas."
+                return None, "File terkunci kata sandi. Harap masukkan password input pada kolom di atas."
             
             decrypted_io = io.BytesIO()
             office_file.load_key(password=password)
@@ -29,6 +30,20 @@ def decrypt_excel_file(file_bytes, password=None):
             return file_bytes, None
     except Exception as e:
         return None, f"Password salah atau gagal membuka file terenkripsi ({str(e)})."
+
+def encrypt_excel_bytes(raw_bytes, password=None):
+    """Mengenkripsi file Excel output menggunakan password sebelum dimasukkan ke ZIP."""
+    if not password:
+        return raw_bytes
+    
+    input_io = io.BytesIO(raw_bytes)
+    output_io = io.BytesIO()
+    
+    # Enkripsi menggunakan msoffcrypto standar Office
+    office_file = msoffcrypto.OfficeFile()
+    office_file.encrypt(input_io, output_io, password=password)
+    output_io.seek(0)
+    return output_io.getvalue()
 
 # =====================================================================
 # 2. FUNGSI FORMAT NOMINAL & PEMBERSIH TEKS
@@ -64,7 +79,6 @@ def apply_excel_styling(ws, headers, num_rows):
     header_fill = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")
     header_font = Font(name="Calibri", size=11, bold=True)
     
-    # 1. Format Header (Diberi Wrap Text dan Alignment Center)
     for col_idx in range(1, len(headers) + 1):
         cell = ws.cell(row=1, column=col_idx)
         cell.font = header_font
@@ -72,24 +86,19 @@ def apply_excel_styling(ws, headers, num_rows):
         cell.border = thin_border
         cell.alignment = Alignment(vertical="center", horizontal="center", wrap_text=True)
 
-    # 2. Format Sel Data (Diberi Wrap Text agar Teks Panjang Rapi)
     for row_idx in range(2, num_rows + 2):
         for col_idx in range(1, len(headers) + 1):
             cell = ws.cell(row=row_idx, column=col_idx)
             cell.border = thin_border
-            # FITUR BARU: wrap_text=True pada seluruh sel isi data
             cell.alignment = Alignment(vertical="center", wrap_text=True)
 
-    # 3. Mengatur Lebar Kolom yang Ideal
     for col_idx, h_name in enumerate(headers, start=1):
         col_letter = get_column_letter(col_idx)
         h_lower = str(h_name).lower()
-        
-        # Atur lebar kolom khusus untuk URL, QRIS, dan Evidence
         if 'evidence' in h_lower or 'image' in h_lower or 'gambar' in h_lower:
-            ws.column_dimensions[col_letter].width = 40  # Lebar untuk menampung gambar besar
+            ws.column_dimensions[col_letter].width = 40
         elif 'url' in h_lower or 'qris' in h_lower or 'location' in h_lower:
-            ws.column_dimensions[col_letter].width = 30  # Lebar untuk teks panjang
+            ws.column_dimensions[col_letter].width = 30
         elif 'name' in h_lower or 'identifier' in h_lower or 'transaction' in h_lower:
             ws.column_dimensions[col_letter].width = 25
         else:
@@ -100,8 +109,6 @@ def apply_excel_styling(ws, headers, num_rows):
 # =====================================================================
 def extract_sheet_images(file_bytes, sheet_name):
     row_images_map = {}
-    
-    # Ekstraksi In-Cell Image (Excel 365 RichData)
     try:
         with zipfile.ZipFile(io.BytesIO(file_bytes), 'r') as z:
             namelist = z.namelist()
@@ -134,14 +141,13 @@ def extract_sheet_images(file_bytes, sheet_name):
                                     media_path = f"xl/media/{rv_index_to_media[vm_idx]}"
                                     if media_path in namelist:
                                         img_data = z.read(media_path)
-                                        col_idx = 9  # Kolom Evidence default
+                                        col_idx = 9
                                         if r_idx not in row_images_map:
                                             row_images_map[r_idx] = []
                                         row_images_map[r_idx].append((col_idx, io.BytesIO(img_data)))
     except Exception:
         pass
 
-    # Ekstraksi Gambar Floating Biasa
     try:
         wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
         if sheet_name in wb.sheetnames:
@@ -221,9 +227,9 @@ def process_multisheet_excel(uploaded_files, password=""):
     return sheets_dict, errors
 
 # =====================================================================
-# 6. FUNGSI MEMBUAT WORKBOOK OUTPUT DENGAN GAMBAR BESAR & WRAP TEXT
+# 6. FUNGSI MEMBUAT WORKBOOK OUTPUT DENGAN ENKRIPSI PASSWORD
 # =====================================================================
-def create_multisheet_workbook(sheets_dict, target_val, selected_column):
+def create_multisheet_workbook(sheets_dict, target_val, selected_column, out_password=None):
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
 
@@ -240,50 +246,45 @@ def create_multisheet_workbook(sheets_dict, target_val, selected_column):
         ws = wb.create_sheet(title=clean_sheet_name)
         ws.views.sheetView[0].showGridLines = True
 
-        # 1. Tulis Header
+        # Header
         for col_idx, h_text in enumerate(headers, start=1):
             ws.cell(row=1, column=col_idx, value=h_text)
 
-        # 2. Tulis Data & Sisipkan Gambar Berukuran Lebih Besar
+        # Data & Gambar
         for row_offset, item in enumerate(filtered_rows, start=2):
             row_dict = item['data']
             for col_idx, h_text in enumerate(headers, start=1):
                 val = row_dict.get(h_text, "")
                 ws.cell(row=row_offset, column=col_idx, value=val)
 
-            # Jika ada gambar pada baris ini
             if item['images']:
                 for col_idx, img_bytes in item['images']:
                     img_bytes.seek(0)
                     new_img = Image(img_bytes)
-                    
-                    # FITUR BARU: Memperbesar gambar agar jelas dibaca (lebar 270px, tinggi 150px)
                     new_img.width = 270
                     new_img.height = 150
-                    
                     col_letter = get_column_letter(col_idx)
                     ws.add_image(new_img, f"{col_letter}{row_offset}")
-                
-                # FITUR BARU: Tinggikan baris menjadi 125 pt agar pas dengan gambar besar
                 ws.row_dimensions[row_offset].height = 125
             else:
-                # Jika tidak ada gambar, beri tinggi baris yang nyaman untuk wrap text
                 ws.row_dimensions[row_offset].height = 25
 
-        # 3. Terapkan Wrap Text, Border, dan Lebar Kolom
         apply_excel_styling(ws, headers, len(filtered_rows))
 
-    buffer = io.BytesIO()
-    wb.save(buffer)
-    buffer.seek(0)
-    return buffer
+    temp_buffer = io.BytesIO()
+    wb.save(temp_buffer)
+    raw_excel_bytes = temp_buffer.getvalue()
+
+    # Enkripsi file jika kata sandi output diisi
+    encrypted_excel_bytes = encrypt_excel_bytes(raw_excel_bytes, password=out_password)
+    return encrypted_excel_bytes
 
 # =====================================================================
 # 7. INTERFACE STREAMLIT
 # =====================================================================
 st.set_page_config(page_title="Multi-Sheet Excel Splitter", layout="wide")
 st.title("📊 Aplikasi Pemisah & Penggabung Berkas Excel")
-st.write("Unggah file Excel, lihat pratinjau data, pilih kolom filter, dan unduh hasilnya secara rapi dengan format *Wrap Text* dan gambar yang lebih jelas!")
+st.write("Unggah file Excel, lihat pratinjau data, tentukan password proteksi output, dan unduh hasilnya secara otomatis!")
 
 col1, col2 = st.columns([2, 1])
 with col1:
@@ -293,15 +294,15 @@ with col1:
         accept_multiple_files=True
     )
 with col2:
-    file_password = st.text_input(
-        "🔑 Password File (jika file terenkripsi):", 
+    input_password = st.text_input(
+        "🔓 Password Buka File Input (jika file input terkunci):", 
         type="password",
-        help="Masukkan password jika file Excel yang diunggah terkunci kata sandi."
+        help="Masukkan password jika file Excel yang diunggah diproteksi kata sandi."
     )
 
 if uploaded_files:
     with st.spinner("Membaca dan memproses file Excel..."):
-        sheets_dict, errors = process_multisheet_excel(uploaded_files, password=file_password)
+        sheets_dict, errors = process_multisheet_excel(uploaded_files, password=input_password)
     
     if errors:
         for err in errors:
@@ -320,17 +321,27 @@ if uploaded_files:
 
         st.markdown("---")
 
-        # Kolom Filter Bersama
+        # Kolom Filter
         all_header_sets = [set(info['headers']) for info in sheets_dict.values()]
         common_columns = list(set.intersection(*all_header_sets)) if all_header_sets else []
         if not common_columns:
             common_columns = list(set.union(*all_header_sets))
 
-        st.subheader("⚙️ Atur Filter Pemisahan Data")
-        selected_column = st.selectbox(
-            "Pilih kolom dasar pemisahan:",
-            options=common_columns
-        )
+        st.subheader("⚙️ Atur Filter & Proteksi Output")
+        
+        col_filter, col_out_pass = st.columns([1, 1])
+        with col_filter:
+            selected_column = st.selectbox(
+                "Pilih kolom dasar pemisahan:",
+                options=common_columns
+            )
+        with col_out_pass:
+            # FITUR BARU: Password untuk File Output
+            output_password = st.text_input(
+                "🔒 Kunci File Excel Output dengan Password (opsional):",
+                type="password",
+                help="Jika diisi, semua file Excel di dalam ZIP akan otomatis terkunci dengan password ini."
+            )
 
         if selected_column:
             all_unique_values = set()
@@ -349,13 +360,18 @@ if uploaded_files:
             # Tombol Eksekusi Unduhan
             st.subheader("📥 Unduh Hasil Filter")
             if st.button("🚀 Proses & Buat File ZIP Multi-Sheet"):
-                with st.spinner("Menyusun file Excel dan menyesuaikan format tabel..."):
+                with st.spinner("Menyusun file Excel dan mengaplikasikan proteksi password..."):
                     zip_buffer = io.BytesIO()
                     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
                         for val in unique_list:
-                            excel_buf = create_multisheet_workbook(sheets_dict, val, selected_column)
+                            excel_bytes = create_multisheet_workbook(
+                                sheets_dict, 
+                                val, 
+                                selected_column, 
+                                out_password=output_password if output_password else None
+                            )
                             clean_filename = str(val).replace("/", "_").replace("\\", "_").replace("?", "_")
-                            zip_file.writestr(f"{clean_filename}.xlsx", excel_buf.getvalue())
+                            zip_file.writestr(f"{clean_filename}.xlsx", excel_bytes)
 
                     zip_buffer.seek(0)
                     st.download_button(
