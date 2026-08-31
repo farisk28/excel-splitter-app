@@ -64,14 +64,9 @@ def decrypt_excel_file(file_bytes, password=None):
         return None, f"Password salah atau gagal membuka file terenkripsi ({str(e)})."
 
 # =====================================================================
-# 2. FUNGSI FORMAT NOMINAL & PEMBERSIH TEKS (DIPERBARUI)
+# 2. FUNGSI FORMAT NOMINAL & PEMBERSIH TEKS
 # =====================================================================
 def format_transaction_amount(val):
-    """
-    Memformat transaction_amount secara cerdas:
-    - Mempertahankan nominal kecil asli seperti '1' atau '100' tetap apa adanya.
-    - Hanya mengoreksi angka desimal pecahan .0 (seperti 15.0 menjadi 15,000).
-    """
     if val is None:
         return ""
     val_str = str(val).strip()
@@ -90,7 +85,7 @@ def format_transaction_amount(val):
         except ValueError:
             return val_str
             
-    # Jika data sudah string teks biasa ("1", "100", "5,000"), kembalikan apa adanya
+    # Jika data sudah string teks biasa ("1", "100", "5,000"), biarkan apa adanya
     return val_str
 
 # =====================================================================
@@ -342,7 +337,9 @@ if uploaded_files:
             st.error(err)
 
     if sheets_dict:
-        st.success(f"Berhasil membaca **{len(sheets_dict)}** sheet: {', '.join([f'**{name}** ({len(info[\"rows\"])} baris)' for name, info in sheets_dict.items()])}")
+        # PERBAIKAN: Menyusun teks ringkasan sheet secara terpisah agar bebas dari SyntaxError
+        sheet_summary = [f"**{name}** ({len(info['rows'])} baris)" for name, info in sheets_dict.items()]
+        st.success(f"Berhasil membaca **{len(sheets_dict)}** sheet: {', '.join(sheet_summary)}")
 
         # Pratinjau Sheet
         st.markdown("### 👀 Pratinjau Data Tiap Sheet")
