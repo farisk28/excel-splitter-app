@@ -10,6 +10,39 @@ import xml.etree.ElementTree as ET
 import msoffcrypto
 
 # =====================================================================
+# 0. FUNGSI AUTENTIKASI / PASSWORD AKSES APLIKASI
+# =====================================================================
+def check_password():
+    """Mengembalikan True jika pengguna memasukkan kata sandi yang benar."""
+    APP_PASSWORD = "adminsecret123"  # Sesuaikan kata sandi jika diperlukan
+
+    if "authenticated" not in st.session_state:
+        st.session_state.authenticated = False
+
+    if st.session_state.authenticated:
+        return True
+
+    st.title("🔒 Akses Terbatas - Excel Splitter App")
+    st.write("Silakan masukkan kata sandi untuk mengakses aplikasi.")
+
+    with st.form("login_form"):
+        entered_password = st.text_input("Password Aplikasi:", type="password")
+        submitted = st.form_submit_button("Masuk")
+
+        if submitted:
+            if entered_password == APP_PASSWORD:
+                st.session_state.authenticated = True
+                st.success("Kata sandi benar! Membuka aplikasi...")
+                st.rerun()
+            else:
+                st.error("Kata sandi salah. Silakan coba lagi.")
+
+    return False
+
+if not check_password():
+    st.stop()
+
+# =====================================================================
 # 1. FUNGSI DEKRIPSI FILE EXCEL TERPROTEKSI PASSWORD
 # =====================================================================
 def decrypt_excel_file(file_bytes, password=None):
@@ -19,7 +52,7 @@ def decrypt_excel_file(file_bytes, password=None):
         if office_file.is_encrypted():
             if not password:
                 return None, "File terkunci kata sandi. Harap masukkan password pada kolom di atas."
-
+            
             decrypted_io = io.BytesIO()
             office_file.load_key(password=password)
             office_file.decrypt(decrypted_io)
@@ -31,25 +64,34 @@ def decrypt_excel_file(file_bytes, password=None):
         return None, f"Password salah atau gagal membuka file terenkripsi ({str(e)})."
 
 # =====================================================================
-# 2. FUNGSI FORMAT NOMINAL & PEMBERSIH TEKS
+# 2. FUNGSI FORMAT NOMINAL & PEMBERSIH TEKS (DIPERBARUI)
 # =====================================================================
 def format_transaction_amount(val):
+    """
+    Memformat transaction_amount secara cerdas:
+    - Mempertahankan nominal kecil asli seperti '1' atau '100' tetap apa adanya.
+    - Hanya mengoreksi angka desimal pecahan .0 (seperti 15.0 menjadi 15,000).
+    """
     if val is None:
         return ""
     val_str = str(val).strip()
     if val_str == "#VALUE!" or not val_str:
         return ""
-    try:
-        clean_str = val_str.replace(',', '').replace('.', '')
-        if val_str.endswith('.0'):
-            val_str = val_str[:-2]
-            clean_str = val_str.replace(',', '').replace('.', '')
-        num = float(clean_str)
-        if 0 < num < 1000:
-            num = num * 1000
-        return f"{int(num):,}"
-    except ValueError:
-        return val_str
+    
+    # Hanya koreksi perkalian 1000 jika data asli berupa float atau berakhiran .0
+    if isinstance(val, float) or val_str.endswith('.0'):
+        try:
+            clean_str = val_str[:-2] if val_str.endswith('.0') else val_str
+            clean_str = clean_str.replace(',', '').replace('.', '')
+            num = float(clean_str)
+            if 0 < num < 1000:
+                num = num * 1000
+            return f"{int(num):,}"
+        except ValueError:
+            return val_str
+            
+    # Jika data sudah string teks biasa ("1", "100", "5,000"), kembalikan apa adanya
+    return val_str
 
 # =====================================================================
 # 3. FUNGSI STYLING TABEL, WRAP TEXT, & BORDER EXCEL
@@ -64,7 +106,7 @@ def apply_excel_styling(ws, headers, num_rows):
     header_fill = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")
     header_font = Font(name="Calibri", size=11, bold=True)
 
-    # 1. Format Header (Diberi Wrap Text dan Alignment Center)
+    # 1. Format Header
     for col_idx in range(1, len(headers) + 1):
         cell = ws.cell(row=1, column=col_idx)
         cell.font = header_font
@@ -72,12 +114,11 @@ def apply_excel_styling(ws, headers, num_rows):
         cell.border = thin_border
         cell.alignment = Alignment(vertical="center", horizontal="center", wrap_text=True)
 
-    # 2. Format Sel Data (Diberi Wrap Text agar Teks Panjang Rapi)
+    # 2. Format Sel Data
     for row_idx in range(2, num_rows + 2):
         for col_idx in range(1, len(headers) + 1):
             cell = ws.cell(row=row_idx, column=col_idx)
             cell.border = thin_border
-            # FITUR BARU: wrap_text=True pada seluruh sel isi data
             cell.alignment = Alignment(vertical="center", wrap_text=True)
 
     # 3. Mengatur Lebar Kolom yang Ideal
@@ -85,11 +126,10 @@ def apply_excel_styling(ws, headers, num_rows):
         col_letter = get_column_letter(col_idx)
         h_lower = str(h_name).lower()
 
-        # Atur lebar kolom khusus untuk URL, QRIS, dan Evidence
         if 'evidence' in h_lower or 'image' in h_lower or 'gambar' in h_lower:
-            ws.column_dimensions[col_letter].width = 40  # Lebar untuk menampung gambar besar
+            ws.column_dimensions[col_letter].width = 40
         elif 'url' in h_lower or 'qris' in h_lower or 'location' in h_lower:
-            ws.column_dimensions[col_letter].width = 30  # Lebar untuk teks panjang
+            ws.column_dimensions[col_letter].width = 30
         elif 'name' in h_lower or 'identifier' in h_lower or 'transaction' in h_lower:
             ws.column_dimensions[col_letter].width = 25
         else:
@@ -101,7 +141,6 @@ def apply_excel_styling(ws, headers, num_rows):
 def extract_sheet_images(file_bytes, sheet_name):
     row_images_map = {}
 
-    # Ekstraksi In-Cell Image (Excel 365 RichData)
     try:
         with zipfile.ZipFile(io.BytesIO(file_bytes), 'r') as z:
             namelist = z.namelist()
@@ -134,14 +173,13 @@ def extract_sheet_images(file_bytes, sheet_name):
                                     media_path = f"xl/media/{rv_index_to_media[vm_idx]}"
                                     if media_path in namelist:
                                         img_data = z.read(media_path)
-                                        col_idx = 9  # Kolom Evidence default
+                                        col_idx = 9
                                         if r_idx not in row_images_map:
                                             row_images_map[r_idx] = []
                                         row_images_map[r_idx].append((col_idx, io.BytesIO(img_data)))
     except Exception:
         pass
 
-    # Ekstraksi Gambar Floating Biasa
     try:
         wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
         if sheet_name in wb.sheetnames:
@@ -221,7 +259,7 @@ def process_multisheet_excel(uploaded_files, password=""):
     return sheets_dict, errors
 
 # =====================================================================
-# 6. FUNGSI MEMBUAT WORKBOOK OUTPUT DENGAN GAMBAR BESAR & WRAP TEXT
+# 6. FUNGSI MEMBUAT WORKBOOK OUTPUT
 # =====================================================================
 def create_multisheet_workbook(sheets_dict, target_val, selected_column):
     wb = openpyxl.Workbook()
@@ -240,37 +278,28 @@ def create_multisheet_workbook(sheets_dict, target_val, selected_column):
         ws = wb.create_sheet(title=clean_sheet_name)
         ws.views.sheetView[0].showGridLines = True
 
-        # 1. Tulis Header
         for col_idx, h_text in enumerate(headers, start=1):
             ws.cell(row=1, column=col_idx, value=h_text)
 
-        # 2. Tulis Data & Sisipkan Gambar Berukuran Lebih Besar
         for row_offset, item in enumerate(filtered_rows, start=2):
             row_dict = item['data']
             for col_idx, h_text in enumerate(headers, start=1):
                 val = row_dict.get(h_text, "")
                 ws.cell(row=row_offset, column=col_idx, value=val)
 
-            # Jika ada gambar pada baris ini
             if item['images']:
                 for col_idx, img_bytes in item['images']:
                     img_bytes.seek(0)
                     new_img = Image(img_bytes)
-
-                    # FITUR BARU: Memperbesar gambar agar jelas dibaca (lebar 270px, tinggi 150px)
                     new_img.width = 270
                     new_img.height = 150
-
                     col_letter = get_column_letter(col_idx)
                     ws.add_image(new_img, f"{col_letter}{row_offset}")
 
-                # FITUR BARU: Tinggikan baris menjadi 125 pt agar pas dengan gambar besar
                 ws.row_dimensions[row_offset].height = 125
             else:
-                # Jika tidak ada gambar, beri tinggi baris yang nyaman untuk wrap text
                 ws.row_dimensions[row_offset].height = 25
 
-        # 3. Terapkan Wrap Text, Border, dan Lebar Kolom
         apply_excel_styling(ws, headers, len(filtered_rows))
 
     buffer = io.BytesIO()
@@ -279,9 +308,14 @@ def create_multisheet_workbook(sheets_dict, target_val, selected_column):
     return buffer
 
 # =====================================================================
-# 7. INTERFACE STREAMLIT
+# 7. INTERFACE STREAMLIT UTAMA
 # =====================================================================
-st.set_page_config(page_title="Multi-Sheet Excel Splitter", layout="wide")
+with st.sidebar:
+    st.write("👤 **Status:** Terotentikasi")
+    if st.button("🚪 Keluar / Logout"):
+        st.session_state.authenticated = False
+        st.rerun()
+
 st.title("📊 Aplikasi Pemisah & Penggabung Berkas Excel")
 st.write("Unggah file Excel, lihat pratinjau data, pilih kolom filter, dan unduh hasilnya secara rapi dengan format *Wrap Text* dan gambar yang lebih jelas!")
 
@@ -308,7 +342,7 @@ if uploaded_files:
             st.error(err)
 
     if sheets_dict:
-        st.success(f"Berhasil membaca **{len(sheets_dict)}** sheet: {', '.join([f'**{name}** ({len(info['rows'])} baris)' for name, info in sheets_dict.items()])}")
+        st.success(f"Berhasil membaca **{len(sheets_dict)}** sheet: {', '.join([f'**{name}** ({len(info[\"rows\"])} baris)' for name, info in sheets_dict.items()])}")
 
         # Pratinjau Sheet
         st.markdown("### 👀 Pratinjau Data Tiap Sheet")
