@@ -73,7 +73,6 @@ def format_transaction_amount(val):
     if val_str == "#VALUE!" or not val_str:
         return ""
     
-    # Hanya koreksi perkalian 1000 jika data asli berupa float atau berakhiran .0
     if isinstance(val, float) or val_str.endswith('.0'):
         try:
             clean_str = val_str[:-2] if val_str.endswith('.0') else val_str
@@ -85,7 +84,6 @@ def format_transaction_amount(val):
         except ValueError:
             return val_str
             
-    # Jika data sudah string teks biasa ("1", "100", "5,000"), biarkan apa adanya
     return val_str
 
 # =====================================================================
@@ -101,7 +99,6 @@ def apply_excel_styling(ws, headers, num_rows):
     header_fill = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")
     header_font = Font(name="Calibri", size=11, bold=True)
 
-    # 1. Format Header
     for col_idx in range(1, len(headers) + 1):
         cell = ws.cell(row=1, column=col_idx)
         cell.font = header_font
@@ -109,14 +106,12 @@ def apply_excel_styling(ws, headers, num_rows):
         cell.border = thin_border
         cell.alignment = Alignment(vertical="center", horizontal="center", wrap_text=True)
 
-    # 2. Format Sel Data
     for row_idx in range(2, num_rows + 2):
         for col_idx in range(1, len(headers) + 1):
             cell = ws.cell(row=row_idx, column=col_idx)
             cell.border = thin_border
             cell.alignment = Alignment(vertical="center", wrap_text=True)
 
-    # 3. Mengatur Lebar Kolom yang Ideal
     for col_idx, h_name in enumerate(headers, start=1):
         col_letter = get_column_letter(col_idx)
         h_lower = str(h_name).lower()
@@ -193,7 +188,7 @@ def extract_sheet_images(file_bytes, sheet_name):
     return row_images_map
 
 # =====================================================================
-# 5. FUNGSI MEMBACA MULTI-SHEET EXCEL
+# 5. FUNGSI MEMBACA MULTI-SHEET EXCEL + INTEGRASI ACQUIRER AUTOMATION
 # =====================================================================
 def process_multisheet_excel(uploaded_files, password=""):
     sheets_dict = {}
@@ -213,12 +208,44 @@ def process_multisheet_excel(uploaded_files, password=""):
             errors.append(f"Gagal membaca struktur Excel {file.name}: {e}")
             continue
 
+        # -------------------------------------------------------------
+        # EKSTRAKSI MAPPING MPAN -> ACQUIRER DARI SHEET PERTAMA (REKAP)
+        # -------------------------------------------------------------
+        mpan_acquirer_map = {}
+        first_sheet_name = wb.sheetnames[0] if wb.sheetnames else None
+        
+        if first_sheet_name:
+            ws_ref = wb[first_sheet_name]
+            ref_headers = [str(cell.value).strip() if cell.value is not None else "" for cell in ws_ref[1]]
+            
+            # Cari kolom MPAN dan Acquirer di Sheet Pertama
+            mpan_col_idx = next((i + 1 for i, h in enumerate(ref_headers) if 'mpan' in h.lower()), None)
+            acquirer_col_idx = next((i + 1 for i, h in enumerate(ref_headers) if 'acquirer' in h.lower()), None)
+
+            if mpan_col_idx and acquirer_col_idx:
+                for row in range(2, ws_ref.max_row + 1):
+                    m_val = str(ws_ref.cell(row=row, column=mpan_col_idx).value or "").strip()
+                    a_val = str(ws_ref.cell(row=row, column=acquirer_col_idx).value or "").strip()
+                    if m_val and a_val:
+                        mpan_acquirer_map[m_val] = a_val
+
+        # -------------------------------------------------------------
+        # BACA SELURUH SHEET
+        # -------------------------------------------------------------
         for s_name in wb.sheetnames:
             ws = wb[s_name]
             current_headers = [str(cell.value).strip() for cell in ws[1] if cell.value is not None]
 
             if not current_headers:
                 continue
+
+            # Tambahkan kolom Acquirer secara otomatis jika belum ada di header
+            # dan jika kita memiliki pemetaan MPAN dari Sheet Pertama
+            has_acquirer_col = any('acquirer' in h.lower() for h in current_headers)
+            has_mpan_col = any('mpan' in h.lower() for h in current_headers)
+            
+            if not has_acquirer_col and has_mpan_col and mpan_acquirer_map:
+                current_headers.append('Acquirer')
 
             if s_name not in sheets_dict:
                 sheets_dict[s_name] = {
@@ -232,8 +259,8 @@ def process_multisheet_excel(uploaded_files, password=""):
             for row_idx in range(2, ws.max_row + 1):
                 row_vals = []
                 row_dict = {}
-                for c in range(1, len(headers) + 1):
-                    col_name = headers[c - 1]
+                for c in range(1, len(ws[1]) + 1):
+                    col_name = headers[c - 1] if c - 1 < len(headers) else f"Column_{c}"
                     raw_val = ws.cell(row=row_idx, column=c).value
 
                     if col_name in ['transaction_amount', 'amount']:
@@ -243,6 +270,14 @@ def process_multisheet_excel(uploaded_files, password=""):
 
                     row_vals.append(val)
                     row_dict[col_name] = val
+
+                # Tambahkan nilai otomatis pada kolom Acquirer berdasarkan MPAN
+                if 'Acquirer' in headers and 'Acquirer' not in row_dict:
+                    mpan_key_col = next((h for h in headers if 'mpan' in h.lower()), None)
+                    current_mpan = str(row_dict.get(mpan_key_col, "")).strip()
+                    matched_acquirer = mpan_acquirer_map.get(current_mpan, "UNKNOWN")
+                    row_dict['Acquirer'] = matched_acquirer
+                    row_vals.append(matched_acquirer)
 
                 row_images = row_images_map.get(row_idx, [])
                 if any(v != "" for v in row_vals) or len(row_images) > 0:
@@ -337,7 +372,6 @@ if uploaded_files:
             st.error(err)
 
     if sheets_dict:
-        # PERBAIKAN: Menyusun teks ringkasan sheet secara terpisah agar bebas dari SyntaxError
         sheet_summary = [f"**{name}** ({len(info['rows'])} baris)" for name, info in sheets_dict.items()]
         st.success(f"Berhasil membaca **{len(sheets_dict)}** sheet: {', '.join(sheet_summary)}")
 
@@ -368,7 +402,7 @@ if uploaded_files:
             for s_info in sheets_dict.values():
                 if selected_column in s_info['headers']:
                     for r in s_info['rows']:
-                        v = r['data'].get(selected_column, "").strip()
+                        v = str(r['data'].get(selected_column, "")).strip()
                         if v:
                             all_unique_values.add(v)
 
