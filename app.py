@@ -22,7 +22,7 @@ st.set_page_config(
 def check_password():
     """Mengembalikan True jika pengguna memasukkan kata sandi yang benar."""
     # Mengambil password dari Streamlit Secrets, jika tidak ada fallback ke default "admin123"
-    APP_PASSWORD = st.secrets.get("APP_PASSWORD", "admin123")
+    APP_PASSWORD = st.secrets.get("APP_PASSWORD", "alto2026")
 
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
