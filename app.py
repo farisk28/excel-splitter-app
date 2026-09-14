@@ -1,21 +1,28 @@
-import streamlit as st
+import io
+import zipfile
+import xml.etree.ElementTree as ET
 import pandas as pd
 import openpyxl
 from openpyxl.drawing.image import Image
 from openpyxl.styles import Border, Side, Font, PatternFill, Alignment
 from openpyxl.utils import get_column_letter
-import io
-import zipfile
-import xml.etree.ElementTree as ET
 import msoffcrypto
-import re
+import streamlit as st
+
+# Set Konfigurasi Halaman Streamlit
+st.set_page_config(
+    page_title="Excel Splitter & Merger",
+    page_icon="📊",
+    layout="wide"
+)
 
 # =====================================================================
 # 0. FUNGSI AUTENTIKASI / PASSWORD AKSES APLIKASI
 # =====================================================================
 def check_password():
     """Mengembalikan True jika pengguna memasukkan kata sandi yang benar."""
-    APP_PASSWORD = "alto2026"  # Kata sandi aplikasi Streamlit
+    # Mengambil password dari Streamlit Secrets, jika tidak ada fallback ke default "admin123"
+    APP_PASSWORD = st.secrets.get("APP_PASSWORD", "admin123")
 
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
@@ -52,8 +59,7 @@ def decrypt_excel_file(file_bytes, password=None):
         office_file = msoffcrypto.OfficeFile(file_io)
         if office_file.is_encrypted():
             if not password:
-                return None, "File terkunci kata sandi. Harap masukkan password pada kolom di atas."
-            
+                return None, "File terkunci kata sandi. Harap masukkan password pada kolom yang disediakan."
             decrypted_io = io.BytesIO()
             office_file.load_key(password=password)
             office_file.decrypt(decrypted_io)
@@ -65,29 +71,47 @@ def decrypt_excel_file(file_bytes, password=None):
         return None, f"Password salah atau gagal membuka file terenkripsi ({str(e)})."
 
 # =====================================================================
-# 2. FUNGSI FORMAT NOMINAL & PEMBERSIH TEKS (PADA BAGIAN INI DIPERBARUI)
+# 2. FUNGSI FORMAT NOMINAL & PEMBERSIH TEKS (DIPERBAIKI)
 # =====================================================================
 def format_transaction_amount(val):
-    """
-    Membaca dan menyalin nilai nominal angka persis sebagai string murni.
-    Menjaga agar pemisah ribuan (. atau ,) tidak dikalkulasi ulang / diubah.
-    """
     if val is None:
         return ""
     
-    val_str = str(val).strip()
-    if val_str == "#VALUE!" or not val_str:
-        return ""
-    
-    # Jika Excel menyimpan sel sebagai float (contoh: 2.6 untuk 2.600)
-    if isinstance(val, float):
-        parts = str(val).split('.')
-        if len(parts) == 2 and len(parts[1]) < 3:
-            padded_decimals = parts[1].ljust(3, '0')
-            return f"{parts[0]}.{padded_decimals}"
-        return val_str
+    # 1. Jika data berupa String (misal: "1,010,400", "5,000,000", atau "5.0")
+    if isinstance(val, str):
+        val_str = val.strip()
+        if val_str == "#VALUE!" or not val_str:
+            return ""
+        
+        # Jika string mengandung format desimal tunggal seperti '5.0'
+        if '.' in val_str and ',' not in val_str:
+            try:
+                num = float(val_str)
+                if 0 < num < 1000:
+                    num = num * 1000
+                return str(int(num))
+            except ValueError:
+                pass
 
-    return val_str
+        # Menghapus semua separator titik/koma pemisah ribuan
+        return val_str.replace(',', '').replace('.', '')
+
+    # 2. Jika data dibaca sebagai Float / Integer oleh openpyxl (misal: 5.0, 2.6, 100.0)
+    elif isinstance(val, (int, float)):
+        num = float(val)
+        # Nilai float < 1000 berasal dari format desimal ribuan Excel (5.0 -> 5000, 2.6 -> 2600)
+        if 0 < num < 1000:
+            num = num * 1000
+        return str(int(num))
+        
+    return str(val)
+
+def sanitize_filename(name):
+    """Membersihkan karakter terlarang untuk nama file/sheet Excel."""
+    invalid_chars = ['/', '\\', '?', '*', ':', '[', ']', '"', '<', '>', '|']
+    for char in invalid_chars:
+        name = name.replace(char, "_")
+    return name.strip()
 
 # =====================================================================
 # 3. FUNGSI STYLING TABEL, WRAP TEXT, & BORDER EXCEL
@@ -119,11 +143,11 @@ def apply_excel_styling(ws, headers, num_rows):
         col_letter = get_column_letter(col_idx)
         h_lower = str(h_name).lower()
 
-        if 'evidence' in h_lower or 'image' in h_lower or 'gambar' in h_lower:
+        if any(k in h_lower for k in ['evidence', 'image', 'gambar']):
             ws.column_dimensions[col_letter].width = 40
-        elif 'url' in h_lower or 'qris' in h_lower or 'location' in h_lower:
+        elif any(k in h_lower for k in ['url', 'qris', 'location']):
             ws.column_dimensions[col_letter].width = 30
-        elif 'name' in h_lower or 'identifier' in h_lower or 'transaction' in h_lower:
+        elif any(k in h_lower for k in ['name', 'identifier', 'transaction']):
             ws.column_dimensions[col_letter].width = 25
         else:
             ws.column_dimensions[col_letter].width = 18
@@ -133,7 +157,6 @@ def apply_excel_styling(ws, headers, num_rows):
 # =====================================================================
 def extract_sheet_images(file_bytes, sheet_name):
     row_images_map = {}
-
     try:
         with zipfile.ZipFile(io.BytesIO(file_bytes), 'r') as z:
             namelist = z.namelist()
@@ -144,7 +167,11 @@ def extract_sheet_images(file_bytes, sheet_name):
 
                 rich_rel_xml = z.read("xl/richData/richValueRel.xml")
                 root_rich_rel = ET.fromstring(rich_rel_xml)
-                index_to_media = [rel_id_to_target[e.attrib['{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id']] for e in root_rich_rel if e.attrib['{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id'] in rel_id_to_target]
+                index_to_media = [
+                    rel_id_to_target[e.attrib['{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id']]
+                    for e in root_rich_rel 
+                    if e.attrib['{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id'] in rel_id_to_target
+                ]
 
                 rv_xml = z.read("xl/richData/rdrichvalue.xml")
                 root_rv = ET.fromstring(rv_xml)
@@ -206,7 +233,7 @@ def process_multisheet_excel(uploaded_files, password=""):
             continue
 
         try:
-            wb = openpyxl.load_workbook(io.BytesIO(decrypted_bytes), data_only=False)
+            wb = openpyxl.load_workbook(io.BytesIO(decrypted_bytes), data_only=True)
         except Exception as e:
             errors.append(f"Gagal membaca struktur Excel {file.name}: {e}")
             continue
@@ -267,13 +294,12 @@ def process_multisheet_excel(uploaded_files, password=""):
 
                 if 'Acquirer' in headers and 'Acquirer' not in row_dict:
                     mpan_key_col = next((h for h in headers if 'mpan' in h.lower()), None)
-                    current_mpan = str(row_dict.get(mpan_key_col, "")).strip()
+                    current_mpan = str(row_dict.get(mpan_key_col, "")).strip() if mpan_key_col else ""
                     matched_acquirer = mpan_acquirer_map.get(current_mpan, "UNKNOWN")
                     row_dict['Acquirer'] = matched_acquirer
-                    row_vals.append(matched_acquirer)
 
                 row_images = row_images_map.get(row_idx, [])
-                if any(v != "" for v in row_vals) or len(row_images) > 0:
+                if any(v != "" for v in row_dict.values()) or len(row_images) > 0:
                     sheets_dict[s_name]['rows'].append({
                         'data': row_dict,
                         'images': row_images
@@ -297,7 +323,7 @@ def create_multisheet_workbook(sheets_dict, target_val, selected_column):
         else:
             filtered_rows = rows
 
-        clean_sheet_name = str(s_name)[:30].replace("/", "_").replace("\\", "_").replace("?", "_")
+        clean_sheet_name = sanitize_filename(str(s_name))[:30]
         ws = wb.create_sheet(title=clean_sheet_name)
         ws.views.sheetView[0].showGridLines = True
 
@@ -334,24 +360,24 @@ def create_multisheet_workbook(sheets_dict, target_val, selected_column):
 # 7. INTERFACE STREAMLIT UTAMA
 # =====================================================================
 with st.sidebar:
-    st.write("👤 **Status:** Terotentikasi")
+    st.write("👤 Status: Terotentikasi")
     if st.button("🚪 Keluar / Logout"):
         st.session_state.authenticated = False
         st.rerun()
 
 st.title("📊 Aplikasi Pemisah & Penggabung Berkas Excel")
-st.write("Unggah file Excel, lihat pratinjau data, pilih kolom filter, dan unduh hasilnya secara rapi dengan format *Wrap Text* dan gambar yang lebih jelas!")
+st.write("Unggah file Excel, lihat pratinjau data, pilih kolom filter, dan unduh hasilnya secara rapi!")
 
 col1, col2 = st.columns([2, 1])
 with col1:
     uploaded_files = st.file_uploader(
-        "Pilih satu atau beberapa file Excel (.xlsx)", 
-        type=["xlsx"], 
+        "Pilih satu atau beberapa file Excel (.xlsx)",
+        type=["xlsx"],
         accept_multiple_files=True
     )
 with col2:
     file_password = st.text_input(
-        "🔑 Password File (jika file terenkripsi):", 
+        "🔑 Password File (jika file terenkripsi):",
         type="password",
         help="Masukkan password jika file Excel yang diunggah terkunci kata sandi."
     )
@@ -359,7 +385,7 @@ with col2:
 if uploaded_files:
     with st.spinner("Membaca dan memproses file Excel..."):
         sheets_dict, errors = process_multisheet_excel(uploaded_files, password=file_password)
-
+        
     if errors:
         for err in errors:
             st.error(err)
@@ -368,15 +394,17 @@ if uploaded_files:
         sheet_summary = [f"**{name}** ({len(info['rows'])} baris)" for name, info in sheets_dict.items()]
         st.success(f"Berhasil membaca **{len(sheets_dict)}** sheet: {', '.join(sheet_summary)}")
 
+        # Pratinjau Sheet
         st.markdown("### 👀 Pratinjau Data Tiap Sheet")
         tabs = st.tabs(list(sheets_dict.keys()))
         for idx, (s_name, s_info) in enumerate(sheets_dict.items()):
             with tabs[idx]:
                 df_preview = pd.DataFrame([r['data'] for r in s_info['rows']])
-                st.dataframe(df_preview.head(10))
+                st.dataframe(df_preview.head(10), use_container_width=True)
 
         st.markdown("---")
 
+        # Kolom Filter Bersama
         all_header_sets = [set(info['headers']) for info in sheets_dict.values()]
         common_columns = list(set.intersection(*all_header_sets)) if all_header_sets else []
         if not common_columns:
@@ -409,13 +437,13 @@ if uploaded_files:
                     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
                         for val in unique_list:
                             excel_buf = create_multisheet_workbook(sheets_dict, val, selected_column)
-                            clean_filename = str(val).replace("/", "_").replace("\\", "_").replace("?", "_")
+                            clean_filename = sanitize_filename(str(val))
                             zip_file.writestr(f"{clean_filename}.xlsx", excel_buf.getvalue())
 
                     zip_buffer.seek(0)
                     st.download_button(
                         label=f"📥 Download File ZIP ({len(unique_list)} File Excel)",
                         data=zip_buffer,
-                        file_name=f"Hasil_Filter_{selected_column}.zip",
+                        file_name=f"Hasil_Filter_{sanitize_filename(selected_column)}.zip",
                         mime="application/zip"
                     )
