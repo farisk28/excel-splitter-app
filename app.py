@@ -8,13 +8,14 @@ import io
 import zipfile
 import xml.etree.ElementTree as ET
 import msoffcrypto
+import re
 
 # =====================================================================
 # 0. FUNGSI AUTENTIKASI / PASSWORD AKSES APLIKASI
 # =====================================================================
 def check_password():
     """Mengembalikan True jika pengguna memasukkan kata sandi yang benar."""
-    APP_PASSWORD = "alto2026"  # Sesuaikan kata sandi jika diperlukan
+    APP_PASSWORD = "alto2026"  # Kata sandi aplikasi Streamlit
 
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
@@ -64,26 +65,28 @@ def decrypt_excel_file(file_bytes, password=None):
         return None, f"Password salah atau gagal membuka file terenkripsi ({str(e)})."
 
 # =====================================================================
-# 2. FUNGSI FORMAT NOMINAL & PEMBERSIH TEKS
+# 2. FUNGSI FORMAT NOMINAL & PEMBERSIH TEKS (PADA BAGIAN INI DIPERBARUI)
 # =====================================================================
 def format_transaction_amount(val):
+    """
+    Membaca dan menyalin nilai nominal angka persis sebagai string murni.
+    Menjaga agar pemisah ribuan (. atau ,) tidak dikalkulasi ulang / diubah.
+    """
     if val is None:
         return ""
+    
     val_str = str(val).strip()
     if val_str == "#VALUE!" or not val_str:
         return ""
     
-    if isinstance(val, float) or val_str.endswith('.0'):
-        try:
-            clean_str = val_str[:-2] if val_str.endswith('.0') else val_str
-            clean_str = clean_str.replace(',', '').replace('.', '')
-            num = float(clean_str)
-            if 0 < num < 1000:
-                num = num * 1000
-            return f"{int(num):,}"
-        except ValueError:
-            return val_str
-            
+    # Jika Excel menyimpan sel sebagai float (contoh: 2.6 untuk 2.600)
+    if isinstance(val, float):
+        parts = str(val).split('.')
+        if len(parts) == 2 and len(parts[1]) < 3:
+            padded_decimals = parts[1].ljust(3, '0')
+            return f"{parts[0]}.{padded_decimals}"
+        return val_str
+
     return val_str
 
 # =====================================================================
@@ -203,14 +206,11 @@ def process_multisheet_excel(uploaded_files, password=""):
             continue
 
         try:
-            wb = openpyxl.load_workbook(io.BytesIO(decrypted_bytes), data_only=True)
+            wb = openpyxl.load_workbook(io.BytesIO(decrypted_bytes), data_only=False)
         except Exception as e:
             errors.append(f"Gagal membaca struktur Excel {file.name}: {e}")
             continue
 
-        # -------------------------------------------------------------
-        # EKSTRAKSI MAPPING MPAN -> ACQUIRER DARI SHEET PERTAMA (REKAP)
-        # -------------------------------------------------------------
         mpan_acquirer_map = {}
         first_sheet_name = wb.sheetnames[0] if wb.sheetnames else None
         
@@ -218,7 +218,6 @@ def process_multisheet_excel(uploaded_files, password=""):
             ws_ref = wb[first_sheet_name]
             ref_headers = [str(cell.value).strip() if cell.value is not None else "" for cell in ws_ref[1]]
             
-            # Cari kolom MPAN dan Acquirer di Sheet Pertama
             mpan_col_idx = next((i + 1 for i, h in enumerate(ref_headers) if 'mpan' in h.lower()), None)
             acquirer_col_idx = next((i + 1 for i, h in enumerate(ref_headers) if 'acquirer' in h.lower()), None)
 
@@ -229,9 +228,6 @@ def process_multisheet_excel(uploaded_files, password=""):
                     if m_val and a_val:
                         mpan_acquirer_map[m_val] = a_val
 
-        # -------------------------------------------------------------
-        # BACA SELURUH SHEET
-        # -------------------------------------------------------------
         for s_name in wb.sheetnames:
             ws = wb[s_name]
             current_headers = [str(cell.value).strip() for cell in ws[1] if cell.value is not None]
@@ -239,8 +235,6 @@ def process_multisheet_excel(uploaded_files, password=""):
             if not current_headers:
                 continue
 
-            # Tambahkan kolom Acquirer secara otomatis jika belum ada di header
-            # dan jika kita memiliki pemetaan MPAN dari Sheet Pertama
             has_acquirer_col = any('acquirer' in h.lower() for h in current_headers)
             has_mpan_col = any('mpan' in h.lower() for h in current_headers)
             
@@ -271,7 +265,6 @@ def process_multisheet_excel(uploaded_files, password=""):
                     row_vals.append(val)
                     row_dict[col_name] = val
 
-                # Tambahkan nilai otomatis pada kolom Acquirer berdasarkan MPAN
                 if 'Acquirer' in headers and 'Acquirer' not in row_dict:
                     mpan_key_col = next((h for h in headers if 'mpan' in h.lower()), None)
                     current_mpan = str(row_dict.get(mpan_key_col, "")).strip()
@@ -375,7 +368,6 @@ if uploaded_files:
         sheet_summary = [f"**{name}** ({len(info['rows'])} baris)" for name, info in sheets_dict.items()]
         st.success(f"Berhasil membaca **{len(sheets_dict)}** sheet: {', '.join(sheet_summary)}")
 
-        # Pratinjau Sheet
         st.markdown("### 👀 Pratinjau Data Tiap Sheet")
         tabs = st.tabs(list(sheets_dict.keys()))
         for idx, (s_name, s_info) in enumerate(sheets_dict.items()):
@@ -385,7 +377,6 @@ if uploaded_files:
 
         st.markdown("---")
 
-        # Kolom Filter Bersama
         all_header_sets = [set(info['headers']) for info in sheets_dict.values()]
         common_columns = list(set.intersection(*all_header_sets)) if all_header_sets else []
         if not common_columns:
@@ -411,7 +402,6 @@ if uploaded_files:
 
             st.markdown("---")
 
-            # Tombol Eksekusi Unduhan
             st.subheader("📥 Unduh Hasil Filter")
             if st.button("🚀 Proses & Buat File ZIP Multi-Sheet"):
                 with st.spinner("Menyusun file Excel dan menyesuaikan format tabel..."):
