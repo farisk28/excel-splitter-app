@@ -14,7 +14,7 @@ import msoffcrypto
 # =====================================================================
 def check_password():
     """Mengembalikan True jika pengguna memasukkan kata sandi yang benar."""
-    APP_PASSWORD = "xxxxxx"  # Sesuaikan kata sandi jika diperlukan
+    APP_PASSWORD = "alto2026"  # Sesuaikan kata sandi jika diperlukan
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
 
