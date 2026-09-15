@@ -67,21 +67,28 @@ def decrypt_excel_file(file_bytes, password=None):
 def format_transaction_amount(val):
     if val is None:
         return ""
-    val_str = str(val).strip()
-    if val_str == "#VALUE!" or not val_str:
-        return ""
         
-    if isinstance(val, (float, int)) or val_str.endswith('.0') or val_str.isdigit():
+    # 1. Jika nilai berupa teks/string
+    if isinstance(val, str):
+        val_str = val.strip()
+        if val_str == "#VALUE!" or not val_str:
+            return ""
+            
+        # Hapus semua separator (titik dan koma)
+        clean_str = val_str.replace('.', '').replace(',', '')
         try:
-            clean_str = val_str[:-2] if val_str.endswith('.0') else val_str
-            clean_str = clean_str.replace(',', '').replace('.', '')
             num = float(clean_str)
-            # Langsung diformat dengan pemisah ribuan tanpa dikalikan 1000
-            return f"{int(num):,}"
         except ValueError:
             return val_str
             
-    return val_str
+    # 2. Jika nilai sudah berupa angka numerik (int/float)
+    elif isinstance(val, (int, float)):
+        num = float(val)
+    else:
+        return str(val)
+
+    # 3. Langsung cetak angka dengan format ribuan, TANPA dikali 1000
+    return f"{int(num):,}"
 
 # =====================================================================
 # 3. FUNGSI STYLING TABEL, WRAP TEXT, & BORDER EXCEL
