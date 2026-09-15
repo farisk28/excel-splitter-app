@@ -14,7 +14,7 @@ import msoffcrypto
 # =====================================================================
 def check_password():
     """Mengembalikan True jika pengguna memasukkan kata sandi yang benar."""
-    APP_PASSWORD = "alto2026"  # Sesuaikan kata sandi jika diperlukan
+    APP_PASSWORD = "xxxxxx"  # Sesuaikan kata sandi jika diperlukan
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
 
@@ -64,9 +64,13 @@ def decrypt_excel_file(file_bytes, password=None):
 # =====================================================================
 # 2. FUNGSI FORMAT NOMINAL & PEMBERSIH TEKS
 # =====================================================================
-def format_transaction_amount(val):
+def format_transaction_amount(cell):
+    val = cell.value
     if val is None:
         return ""
+        
+    # Ambil format tersembunyi dari sel Excel
+    num_format = getattr(cell, 'number_format', '')
         
     # 1. Jika nilai berupa teks/string
     if isinstance(val, str):
@@ -78,17 +82,24 @@ def format_transaction_amount(val):
         clean_str = val_str.replace('.', '').replace(',', '')
         try:
             num = float(clean_str)
+            # Format dengan pemisah titik (Indonesian style)
+            return f"{int(num):,}".replace(',', '.')
         except ValueError:
             return val_str
             
     # 2. Jika nilai sudah berupa angka numerik (int/float)
     elif isinstance(val, (int, float)):
         num = float(val)
+        
+        # [MAGIC DETECTOR] Jika Excel memanipulasi tampilan ribuan dengan 3 desimal
+        if '0.000' in str(num_format):
+            num = num * 1000
+            
+        # Format dengan pemisah titik (Indonesian style)
+        return f"{int(num):,}".replace(',', '.')
+        
     else:
         return str(val)
-
-    # 3. Langsung cetak angka dengan format ribuan, TANPA dikali 1000
-    return f"{int(num):,}"
 
 # =====================================================================
 # 3. FUNGSI STYLING TABEL, WRAP TEXT, & BORDER EXCEL
@@ -205,7 +216,7 @@ def process_multisheet_excel(uploaded_files, password=""):
             continue
 
         try:
-            wb = openpyxl.load_workbook(io.BytesIO(decrypted_bytes), data_only=True)
+            wb = openpyxl.load_workbook(io.BytesIO(decrypted_bytes), data_only=False)
         except Exception as e:
             errors.append(f"Gagal membaca struktur Excel {file.name}: {e}")
             continue
@@ -220,7 +231,6 @@ def process_multisheet_excel(uploaded_files, password=""):
             ws_ref = wb[first_sheet_name]
             ref_headers = [str(cell.value).strip() if cell.value is not None else "" for cell in ws_ref[1]]
             
-            # Cari kolom MPAN dan Acquirer di Sheet Pertama
             mpan_col_idx = next((i + 1 for i, h in enumerate(ref_headers) if 'mpan' in h.lower()), None)
             acquirer_col_idx = next((i + 1 for i, h in enumerate(ref_headers) if 'acquirer' in h.lower()), None)
 
@@ -241,8 +251,6 @@ def process_multisheet_excel(uploaded_files, password=""):
             if not current_headers:
                 continue
 
-            # Tambahkan kolom Acquirer secara otomatis jika belum ada di header
-            # dan jika kita memiliki pemetaan MPAN dari Sheet Pertama
             has_acquirer_col = any('acquirer' in h.lower() for h in current_headers)
             has_mpan_col = any('mpan' in h.lower() for h in current_headers)
             
@@ -263,17 +271,19 @@ def process_multisheet_excel(uploaded_files, password=""):
                 row_dict = {}
                 for c in range(1, len(ws[1]) + 1):
                     col_name = headers[c - 1] if c - 1 < len(headers) else f"Column_{c}"
-                    raw_val = ws.cell(row=row_idx, column=c).value
+                    
+                    # Membaca objek sel seutuhnya (bukan hanya nilainya)
+                    cell_obj = ws.cell(row=row_idx, column=c)
+                    raw_val = cell_obj.value
 
                     if col_name in ['transaction_amount', 'amount']:
-                        val = format_transaction_amount(raw_val)
+                        val = format_transaction_amount(cell_obj)
                     else:
                         val = "" if raw_val is None or str(raw_val).strip() == "#VALUE!" else str(raw_val).strip()
 
                     row_vals.append(val)
                     row_dict[col_name] = val
 
-                # Tambahkan nilai otomatis pada kolom Acquirer berdasarkan MPAN
                 if 'Acquirer' in headers and 'Acquirer' not in row_dict:
                     mpan_key_col = next((h for h in headers if 'mpan' in h.lower()), None)
                     current_mpan = str(row_dict.get(mpan_key_col, "")).strip()
